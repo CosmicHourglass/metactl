@@ -1,0 +1,57 @@
+# ===== Python 字节码 / 编译产物 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ===== 打包 / 分发 =====
+build/
+dist/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+pip-wheel-metadata/
+wheels/
+
+# ===== 测试与覆盖率 =====
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+.tox/
+.nox/
+.hypothesis/
+nosetests.xml
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+ENV/
+env/
+.env
+.env.local
+!.env.example
+
+# ===== 类型检查 / 静态检查缓存 =====
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pyre/
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== 编辑器 / IDE =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
