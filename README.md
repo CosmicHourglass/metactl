@@ -31,7 +31,7 @@ node bin\cli.js start
 node bin\cli.js proxy on
 ```
 
-`npm install` 结束时内核已就位；`kernel status` 可确认版本与校验信息。`init` 只拉订阅并生成配置，不再联网下载内核。
+`npm install` 结束时内核已就位；`kernel status` 可确认版本与校验信息。`init` 只拉订阅并生成配置，不再联网下载内核，同时会**自动把项目目录加入当前用户的 PATH** —— 重新打开一个终端后就能直接敲 `metactl`。
 
 此时浏览器等应用会通过 `127.0.0.1:17890` 走代理。用完：
 
@@ -40,19 +40,19 @@ node bin\cli.js proxy off
 node bin\cli.js stop
 ```
 
-把项目目录加入 `PATH` 后，也可以直接用仓库根的 `metactl.cmd`：
+`init` 已自动把项目目录加入用户 `PATH`，**重新打开一个终端**后就能直接用短命令（由仓库根的 `metactl.cmd` 提供）：
 
 ```bat
 metactl status
 ```
 
-`metactl.cmd` 用 `%~dp0` 定位自身，换盘符、路径含空格或中文都可用。`node bin\cli.js <命令>` 永远可用，不依赖 PATH 或 npm link。
+`metactl.cmd` 用 `%~dp0` 定位自身，换盘符、路径含空格或中文都可用。`node bin\cli.js <命令>` 永远可用，不依赖 PATH 或 npm link；不想让 `init` 改环境变量就加 `--no-path`。
 
 ## 命令
 
 | 命令 | 说明 |
 | --- | --- |
-| `init` | **添加订阅**：拉取订阅、生成并校验配置。`--sub <地址>` 首次必填，之后可省略以复用已保存地址 |
+| `init` | **添加订阅**：拉取订阅、生成并校验配置，并自动把项目目录加入用户 PATH。`--sub <地址>` 首次必填，之后可省略以复用已保存地址 |
 | `fix` | **断网自救**：清除关机残留的 metactl 系统代理，一键恢复上网（也可写 `proxy fix`；幂等，可反复执行） |
 | `speed` | **节点延迟测速**：全量节点按延迟排行（需内核正在运行），见下节 |
 | `kernel status` | 查看已安装内核的版本、架构、大小与 sha256 校验信息（默认动作，可直接写 `kernel`） |
@@ -70,6 +70,7 @@ metactl status
 常用选项：
 
 - `--sub <地址>`：`init` 的订阅地址（地址含 token，只存本地 `.runtime/`）
+- `--no-path`：`init` 跳过把项目目录加入用户 PATH（默认会自动加入）
 - `kernel` 的选项：`--force`（强制重下）、`--arch auto|x64|ia32|arm64`、`--compatible`、`--mirror <前缀>`
 - `--mirror <前缀>` 或环境变量 `METACTL_MIRROR`：为内核 / Geo 数据下载指定镜像前缀（受限网络自行指定，源码不内置任何镜像域名；sha256 始终按官方 digest 校验）
 - `--force`：`proxy off --force` 仅关闭代理而不恢复；`fix --force` 强制关闭非 metactl 设置的代理（仅置 `ProxyEnable=0`，保留原值）
@@ -98,12 +99,26 @@ metactl status
 2. 复制**整个项目目录**到任意路径（含空格/中文也可以）
 3. 执行 `npm install`（推荐 `npm ci`，需联网，会按 `package-lock.json` 逐字节还原依赖）→ **自动安装内核**；若 `.runtime/` 一起带过来且内核有效，这一步会直接跳过下载
 4. `node bin\cli.js kernel status` 确认内核就位
-5. `node bin\cli.js init --sub <订阅地址>`；如果 `.runtime/` 一起带过来了，配置也在，可直接 `start`
+5. `node bin\cli.js init --sub <订阅地址>`；`init` 会把**这台机器上的**项目目录加入用户 PATH，重开终端即可直接敲 `metactl`。如果 `.runtime/` 一起带过来了，配置也在，可直接 `start`
 6. `metactl.cmd` 可直接用；`npm link` 是可选的，但它会生成带绝对路径的链接，换机后需重做，**不要作为唯一入口**
 
 跨机时工具会自动识别 `.runtime/` 来自其他机器或路径：清理旧的 PID 记录、隔离旧的系统代理快照，绝不会拿旧 PID 去结束新机器上的无关进程。内核与配置仍可复用。
 
 > **安全警告**：`.runtime/` 里的订阅快照与配置含订阅 token 和控制器密钥，随整目录拷贝会一起带走。拷贝给别人前请先删除 `.runtime/`。
+
+## 用户 PATH 自动配置
+
+`init` 成功后会把**项目根目录**（`metactl.cmd` 所在目录）追加到当前用户的 `PATH`：
+
+- 改的是 `HKCU\Environment` 下的 `Path`，**不需要管理员权限**，不动系统级 PATH，也不影响其他用户
+- **只追加、不覆盖**，原有每一项保持不变；值类型（`REG_SZ` / `REG_EXPAND_SZ`）也保持原样
+- **幂等**：目录已在 PATH 中就不重复添加；写入后会回读校验确认生效
+- 写入后广播环境变更通知；**已经开着的终端不会更新，必须重新打开一个新终端**才能用 `metactl`
+- 目录由运行时推导，源码不含任何硬编码盘符；换到别的电脑后 `init` 会加入那台机器上的实际路径
+- 只有订阅、配置、`mihomo -t` 全部成功之后才会动 PATH；写入失败只给警告，**不会让 `init` 失败**
+- 不想改环境变量：`metactl init --no-path`，或全程用 `node bin\cli.js <命令>`
+
+撤销：打开「编辑账户的环境变量」→ 用户变量 `Path` → 删除对应项目目录那一项。工具不提供自动移除。
 
 ## 运行态数据 `.runtime/`
 
@@ -209,6 +224,8 @@ metactl speed --json                 :: 机器可读结果（含组信息、全�
 | 开机后连不上网 | 忘了 `proxy off` 就关机，系统代理残留指向已停掉的内核；执行 `metactl fix` 一键恢复，或按上节配置开机自愈 |
 | `E_SPEED_NO_KERNEL` | 测速需要内核在跑，先执行 `metactl start` |
 | 测速全部节点超时 | 检查节点可用性与 `--url` 是否可达，可调大 `--timeout`；`--json` 的 `failures` 会列出失败节点 |
+| `metactl` 命令找不到 | `init` 已自动加入用户 PATH，但**需要重新打开一个新终端**；旧终端不会继承新 PATH。也可用 `node bin\cli.js <命令>` |
+| `E_PATH_WRITE` / `E_PATH_TOO_LONG` | 用户 PATH 写入被安全软件/组策略拦截，或 PATH 过长；`init` 仍会正常生成订阅与配置。用 `--no-path` 跳过，或手动在「编辑账户的环境变量」里清理/添加 |
 
 ## 自检与开发
 

@@ -33,9 +33,10 @@ const proc = require('../src/process');
 const scan = require('../scripts/scan-forbidden');
 
 // 用内存注册表替换 reg.exe，让代理相关逻辑可在受限终端下单元测试。
-function withRegistry(store, fn) {
+function withRegistry(store, fn, extraModules) {
   const sysPath = require.resolve('../src/system');
   const pxPath = require.resolve('../src/proxy');
+  const extraPaths = (extraModules || []).map((m) => require.resolve(m));
   const realSys = require('../src/system');
   const runSync = (name, args) => {
     if (name !== 'reg.exe') return { code: 0, stdout: '', stderr: '' };
@@ -58,10 +59,12 @@ function withRegistry(store, fn) {
     exports: Object.assign({}, realSys, { runSync }),
   };
   delete require.cache[pxPath];
+  for (const ep of extraPaths) delete require.cache[ep];
   try { return fn(require('../src/proxy')); }
   finally {
     delete require.cache[sysPath];
     delete require.cache[pxPath];
+    for (const ep of extraPaths) delete require.cache[ep];
   }
 }
 
@@ -92,7 +95,7 @@ async function main() {
     for (const m of [
       'constants', 'errors', 'paths', 'config', 'logger', 'system', 'instance',
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
-      'process', 'proxy', 'geodata', 'cli',
+      'process', 'proxy', 'geodata', 'userpath', 'cli',
     ]) require('../src/' + m);
     for (const c of ['init', 'kernel', 'fix', 'speed', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       require('../src/commands/' + c);
@@ -297,6 +300,7 @@ async function main() {
       .options.map((o) => o.long);
     const initOpts = optNames('init');
     assert.ok(initOpts.includes('--sub'));
+    assert.ok(initOpts.includes('--no-path'), 'init 缺少 --no-path');
     assert.ok(!initOpts.includes('--no-kernel'), 'init 不应再带内核选项');
     assert.ok(!initOpts.includes('--mirror'), 'init 不应再带镜像选项');
     assert.ok(!initOpts.includes('--arch'), 'init 不应再带架构选项');
@@ -536,6 +540,49 @@ async function main() {
       await assert.rejects(() => speed.run(ctx, [], { group: [] }),
         (e) => e && e.code === 'E_SPEED_NO_KERNEL');
     });
+  });
+
+  await t('init 用户 PATH：创建 / 幂等 / 保留原值类型', () => {
+    const dir = path.join(TMP, '项目 目录');
+    const store = {};
+    withRegistry(store, () => {
+      const up = require('../src/userpath');
+      const reset = (type, value) => {
+        for (const k of Object.keys(store)) delete store[k];
+        if (type) store.Path = { type, value };
+      };
+
+      // A 用户 PATH 不存在 -> 创建
+      reset(null);
+      let r = up.ensure(dir);
+      assert.strictEqual(r.changed, true);
+      assert.strictEqual(r.reason, 'added');
+      assert.strictEqual(store.Path.value, dir);
+      assert.strictEqual(store.Path.type, 'REG_EXPAND_SZ');
+      assert.strictEqual(r.notified, true, '应广播环境变更');
+
+      // B 重复执行 -> 幂等，不重复追加
+      const once = store.Path.value;
+      r = up.ensure(dir);
+      assert.strictEqual(r.changed, false);
+      assert.strictEqual(r.reason, 'already-present');
+      assert.strictEqual(store.Path.value, once);
+
+      // C 已有其它项且为 REG_SZ -> 追加并保留原值与类型
+      reset('REG_SZ', '%USERPROFILE%\\bin;%APPDATA%\\npm;');
+      r = up.ensure(dir);
+      assert.strictEqual(r.changed, true);
+      assert.strictEqual(r.type, 'REG_SZ', '应保持原有值类型');
+      assert.ok(store.Path.value.startsWith('%USERPROFILE%\\bin;%APPDATA%\\npm;'));
+      assert.ok(store.Path.value.endsWith(';' + dir));
+
+      // D 判定大小写 / 末尾斜杠 / 引号，以及值拼接
+      assert.strictEqual(up.hasDir(dir.toUpperCase() + '\\', dir), true);
+      assert.strictEqual(up.hasDir('"' + dir + '"', dir), true);
+      assert.strictEqual(up.hasDir(path.join(TMP, 'other'), dir), false);
+      assert.strictEqual(up.buildValue('a;b;', dir), 'a;b;' + dir);
+      assert.strictEqual(up.buildValue('', dir), dir);
+    }, ['../src/userpath']);
   });
 
   await t('禁词扫描全绿', () => {

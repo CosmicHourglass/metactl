@@ -27,7 +27,7 @@ function resolveExe(name) {
 
 function friendlyName(name) {
   const map = {
-    'reg.exe': 'Windows 注册表工具（设置/恢复系统代理）',
+    'reg.exe': 'Windows 注册表工具（系统代理 / 用户环境变量）',
     'tasklist.exe': 'Windows 进程列表（校验进程）',
     'taskkill.exe': 'Windows 进程终止（停止内核）',
     'powershell.exe': 'Windows PowerShell（刷新系统代理设置）',

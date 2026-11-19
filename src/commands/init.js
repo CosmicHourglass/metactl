@@ -9,6 +9,7 @@ const profile = require('../profile');
 const yamlPatch = require('../yaml-patch');
 const validate = require('../validate');
 const geodata = require('../geodata');
+const userpath = require('../userpath');
 const { readJson } = require('../paths');
 const { fail } = require('../errors');
 
@@ -49,6 +50,29 @@ async function run(ctx, args, opts) {
   const configPath = yamlPatch.commit(ctx, built);
   logger.ok('生成的配置已通过 mihomo -t 校验');
 
+  // PATH 放最后：订阅、配置、-t 都成功之后才动用户环境；失败只警告，不回滚配置。
+  let pathSetup = { skipped: true, reason: 'disabled' };
+  if (opts.path !== false) {
+    try {
+      const dir = ctx.paths.detectRoot();
+      pathSetup = userpath.ensure(dir);
+      if (pathSetup.changed) logger.ok(`已将项目目录加入用户 PATH: ${dir}`);
+      else logger.info(`项目目录已在用户 PATH 中: ${dir}`);
+      logger.info('重新打开终端后即可直接使用 metactl 命令');
+      if (pathSetup.changed && !pathSetup.notified) {
+        logger.warn('环境变更通知未送达；已开着的终端需要重新打开才能看到新 PATH');
+      }
+    } catch (e) {
+      pathSetup = {
+        ok: false,
+        error: (e && e.code) || 'E_UNKNOWN',
+        message: (e && e.message) || String(e),
+      };
+      logger.warn(`自动加入用户 PATH 失败 [${pathSetup.error}]: ${pathSetup.message}`);
+      logger.warn('订阅与配置已正常生成；可手动把项目目录加入用户 PATH，或在真实终端重跑 init');
+    }
+  }
+
   const out = {
     subscription: { displayName: meta.displayName, bytes: meta.bytes, sha256: meta.sha256 },
     kernel: {
@@ -58,6 +82,7 @@ async function run(ctx, args, opts) {
     },
     config: { file: configPath, sha256: built.sha256 },
     ports: cfg.ports,
+    pathSetup,
   };
   logger.json(out);
   logger.info(`订阅: ${logger.maskUrl(subUrl)} (${meta.displayName})`);
