@@ -1,0 +1,7 @@
+# PowerShell 与 cmd 脚本必须原样存储（CRLF），不做换行转换。
+# 原因：install.ps1 是给人用 irm ... | iex 直接下载执行的，
+# 下载到的就是仓库里的字节；若存成 LF，Windows PowerShell 5.1 会误判
+# 编码，导致脚本内中文全部乱码。
+*.ps1 -text
+*.cmd -text
+*.bat -text
