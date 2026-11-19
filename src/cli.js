@@ -11,6 +11,7 @@ const COMMANDS = {
   version: require('./commands/version'),
   test: require('./commands/test'),
   init: require('./commands/init'),
+  kernel: require('./commands/kernel'),
   start: require('./commands/start'),
   stop: require('./commands/stop'),
   restart: require('./commands/restart'),
@@ -21,7 +22,8 @@ const COMMANDS = {
 const DESCRIPTIONS = {
   version: '显示工具、Node 与运行态目录信息',
   test: '自检运行态（内核/配置/端口/控制器）',
-  init: '拉取订阅、下载官方内核、生成并校验配置',
+  init: '添加订阅：拉取订阅、生成并校验配置（内核由 npm install 安装）',
+  kernel: '查看 / 补装 / 升级 mihomo 官方内核',
   start: '启动内核（不自动开启系统代理）',
   stop: '停止内核（不自动关闭系统代理）',
   restart: '重启内核（系统代理设置保持不变）',
@@ -67,13 +69,17 @@ function build() {
 
   addGlobals(program.command('init')
     .description(DESCRIPTIONS.init)
-    .option('--force', '强制重新下载内核（即使版本已是最新）')
-    .option('--sub <url>', '订阅地址（首次必填；之后可省略以复用已保存地址）')
-    .option('--arch <arch>', 'CPU 架构 auto|x64|ia32|arm64', 'auto')
-    .option('--compatible', '下载 compatible 兼容版内核（老 CPU）')
-    .option('--mirror <url>', 'GitHub 下载镜像前缀（受限网络时自行指定，源码不内置镜像）')
-    .option('--no-kernel', '跳过内核下载，仅刷新订阅与配置'))
+    .option('--sub <url>', '订阅地址（首次必填；之后可省略以复用已保存地址）'))
     .action(makeHandler(program, 'init'));
+
+  addGlobals(program.command('kernel')
+    .description(DESCRIPTIONS.kernel)
+    .argument('[action]', 'status | install | update', 'status')
+    .option('--force', 'install 也强制重新下载；update 默认强制')
+    .option('--arch <arch>', 'CPU 架构 auto|x64|ia32|arm64')
+    .option('--compatible', '下载 compatible 兼容版内核（老 CPU）')
+    .option('--mirror <url>', 'GitHub 下载镜像前缀（受限网络时自行指定，源码不内置镜像）'))
+    .action(makeHandler(program, 'kernel'));
 
   for (const name of ['start', 'stop', 'restart', 'status', 'test', 'version']) {
     addGlobals(program.command(name).description(DESCRIPTIONS[name]))

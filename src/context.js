@@ -23,7 +23,7 @@ function create(opts) {
 
   if (migration.migrated) {
     logger.warn('检测到 .runtime 来自其他机器或路径，已清理进程记录并隔离系统代理快照。');
-    logger.warn('内核与配置可复用，请执行 metactl start；如需更新订阅请执行 metactl init --force。');
+    logger.warn('内核与配置可复用，请执行 metactl start；如需更新订阅请执行 metactl init。');
   }
 
   return { root, p, cfg, opts: o, migration, logger, paths, config };

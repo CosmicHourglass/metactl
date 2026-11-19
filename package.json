@@ -22,6 +22,7 @@
     "README.md"
   ],
   "scripts": {
+    "postinstall": "node scripts/postinstall.js",
     "start": "node bin/cli.js",
     "test": "node test/run.js",
     "scan": "node scripts/scan-forbidden.js"

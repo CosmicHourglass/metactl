@@ -94,7 +94,7 @@ async function run(ctx) {
   }
   if (failed.length) {
     fail('E_TEST_FAILED', `自检有 ${failed.length} 项未通过`,
-      '请执行 metactl init 重新生成配置，或查看 .runtime/logs/metactl.log');
+      '配置问题请执行 metactl init；内核缺失请执行 npm install 或 metactl kernel install；详见 .runtime/logs/metactl.log');
   }
   logger.info('自检全部通过');
   return out;

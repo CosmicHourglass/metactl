@@ -39,7 +39,7 @@ async function main() {
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
       'process', 'proxy', 'geodata', 'cli',
     ]) require('../src/' + m);
-    for (const c of ['init', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const c of ['init', 'kernel', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       require('../src/commands/' + c);
     }
   });
@@ -226,12 +226,46 @@ async function main() {
     assert.strictEqual(free.ok, true);
   });
 
-  await t('cli 装配包含全部命令', () => {
+  await t('cli 装配：kernel 命令与 init 边界', () => {
     const program = require('../src/cli').build();
     const names = program.commands.map((c) => c.name());
-    for (const n of ['init', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const n of ['init', 'kernel', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       assert.ok(names.includes(n), '缺少命令 ' + n);
     }
+    const optNames = (name) => program.commands.find((c) => c.name() === name)
+      .options.map((o) => o.long);
+    const initOpts = optNames('init');
+    assert.ok(initOpts.includes('--sub'));
+    assert.ok(!initOpts.includes('--no-kernel'), 'init 不应再带内核选项');
+    assert.ok(!initOpts.includes('--mirror'), 'init 不应再带镜像选项');
+    assert.ok(!initOpts.includes('--arch'), 'init 不应再带架构选项');
+    const kernelOpts = optNames('kernel');
+    for (const o of ['--force', '--arch', '--compatible', '--mirror']) {
+      assert.ok(kernelOpts.includes(o), 'kernel 缺少选项 ' + o);
+    }
+  });
+
+  await t('postinstall 钩子与幂等判定', () => {
+    const pkg = require('../package.json');
+    assert.strictEqual(pkg.scripts.postinstall, 'node scripts/postinstall.js');
+    const pi = require('../scripts/postinstall');
+    const p = paths.createPaths(path.join(TMP, 'postinstall'));
+    paths.ensureDirs(p);
+    assert.strictEqual(pi.kernelPresent(p), false);
+    fs.writeFileSync(p.mihomoExe, 'stub');
+    fs.writeFileSync(p.kernelJson, JSON.stringify({ tag: 'stub-tag' }));
+    assert.strictEqual(pi.kernelPresent(p), true);
+    assert.strictEqual(pi.envFlag('METACTL_TEST_FLAG'), false);
+  });
+
+  await t('init 缺内核时拒绝且不联网', async () => {
+    const p = paths.createPaths(path.join(TMP, 'init-no-kernel'));
+    paths.ensureDirs(p);
+    const ctx = { p, cfg: config.load(p), logger, migration: {} };
+    await assert.rejects(
+      () => require('../src/commands/init').run(ctx, [], { sub: 'https://example.com/sub/x/clash' }),
+      (e) => e && e.code === 'E_KERNEL_NOT_INSTALLED'
+    );
   });
 
   await t('proxy 注册表备份/恢复（模拟 reg.exe）', () => {

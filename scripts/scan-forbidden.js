@@ -20,6 +20,8 @@ const W = {
   driveD: 'D:' + '\\' + 'Program',
   otherClient: 'ver' + 'ge',
   subName: 'COCO' + 'DUCK',
+  localPortA: '78' + '97',
+  localPortB: '90' + '97',
 };
 
 const RULES = [
@@ -30,7 +32,7 @@ const RULES = [
   { name: 'Windows 绝对路径字面量', re: /(?:^|[\s"'=(\[])[A-Za-z]:[\\/]/m },
   { name: '其它客户端名称', re: new RegExp(W.otherClient, 'i') },
   { name: '真实订阅名', re: new RegExp(W.subName, 'i') },
-  { name: '本机实测端口', re: /\b(7897|9097)\b/ },
+  { name: '本机实测端口', re: new RegExp('\\b(' + W.localPortA + '|' + W.localPortB + ')\\b') },
   { name: '写死的 release tag', re: /\bv\d+\.\d+\.\d+\b/i },
   { name: '写死的 sha256 片段', re: /\b[a-f0-9]{32,}\b/i },
   { name: '写死的用户名', re: /\bliu\b/i },
@@ -51,6 +53,12 @@ function collect() {
       else if (e.isFile() && e.name.endsWith('.js')) files.push(abs);
     }
   }(srcDir));
+  const scriptsDir = path.join(ROOT, 'scripts');
+  if (fs.existsSync(scriptsDir)) {
+    for (const e of fs.readdirSync(scriptsDir, { withFileTypes: true })) {
+      if (e.isFile() && e.name.endsWith('.js')) files.push(path.join(scriptsDir, e.name));
+    }
+  }
   return files;
 }
 
