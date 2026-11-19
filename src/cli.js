@@ -13,6 +13,7 @@ const COMMANDS = {
   init: require('./commands/init'),
   kernel: require('./commands/kernel'),
   fix: require('./commands/fix'),
+  speed: require('./commands/speed'),
   start: require('./commands/start'),
   stop: require('./commands/stop'),
   restart: require('./commands/restart'),
@@ -26,6 +27,7 @@ const DESCRIPTIONS = {
   init: '添加订阅：拉取订阅、生成并校验配置（内核由 npm install 安装）',
   kernel: '查看 / 补装 / 升级 mihomo 官方内核',
   fix: '断网自救：清除关机残留的 metactl 系统代理，一键恢复上网',
+  speed: '节点延迟测速：全量节点按延迟排行（需内核正在运行）',
   start: '启动内核（不自动开启系统代理）',
   stop: '停止内核（不自动关闭系统代理）',
   restart: '重启内核（系统代理设置保持不变）',
@@ -92,6 +94,14 @@ function build() {
     .description(DESCRIPTIONS.fix)
     .option('--force', '即使当前代理不是 metactl 设置的也强制关闭（仅关闭，保留原 ProxyServer 值）'))
     .action(makeHandler(program, 'fix'));
+
+  addGlobals(program.command('speed')
+    .description(DESCRIPTIONS.speed)
+    .option('--group <name>', '只测指定代理组（可重复）', (v, prev) => { prev.push(v); return prev; }, [])
+    .option('--url <url>', '延迟测试地址（默认 Clash 的 generate_204）')
+    .option('--timeout <ms>', '单节点超时毫秒（默认 3000）')
+    .option('--limit <n>', '只显示延迟最低的前 n 个节点'))
+    .action(makeHandler(program, 'speed'));
 
   addGlobals(program.command('proxy')
     .description('开启 / 恢复 / 修复 Windows 系统代理')

@@ -65,6 +65,28 @@ function withRegistry(store, fn) {
   }
 }
 
+// 用假的外部控制器替换 process 模块，测速逻辑可离线单元测试。
+async function withFakeProcess(fakeExports, fn) {
+  const procPath = require.resolve('../src/process');
+  const speedPath = require.resolve('../src/commands/speed');
+  const realProc = require('../src/process');
+  require.cache[procPath] = {
+    id: procPath, filename: procPath, loaded: true,
+    exports: Object.assign({}, realProc, fakeExports),
+  };
+  delete require.cache[speedPath];
+  try { return await fn(require(speedPath)); }
+  finally {
+    delete require.cache[procPath];
+    delete require.cache[speedPath];
+  }
+}
+
+const quietLogger = {
+  info() {}, ok() {}, warn() {}, err() {}, debug() {}, json() {},
+  maskUrl: (s) => s, maskText: (s) => s,
+};
+
 async function main() {
   await t('全部模块可加载', () => {
     for (const m of [
@@ -72,7 +94,7 @@ async function main() {
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
       'process', 'proxy', 'geodata', 'cli',
     ]) require('../src/' + m);
-    for (const c of ['init', 'kernel', 'fix', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const c of ['init', 'kernel', 'fix', 'speed', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       require('../src/commands/' + c);
     }
   });
@@ -262,11 +284,15 @@ async function main() {
   await t('cli 装配：kernel 命令与 init 边界', () => {
     const program = require('../src/cli').build();
     const names = program.commands.map((c) => c.name());
-    for (const n of ['init', 'kernel', 'fix', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const n of ['init', 'kernel', 'fix', 'speed', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       assert.ok(names.includes(n), '缺少命令 ' + n);
     }
     const fixOpts = program.commands.find((c) => c.name() === 'fix').options.map((o) => o.long);
     assert.ok(fixOpts.includes('--force'), 'fix 缺少 --force');
+    const speedOpts = program.commands.find((c) => c.name() === 'speed').options.map((o) => o.long);
+    for (const o of ['--group', '--url', '--timeout', '--limit']) {
+      assert.ok(speedOpts.includes(o), 'speed 缺少选项 ' + o);
+    }
     const optNames = (name) => program.commands.find((c) => c.name() === name)
       .options.map((o) => o.long);
     const initOpts = optNames('init');
@@ -429,6 +455,86 @@ async function main() {
       assert.strictEqual(r5.mode, 'disabled');
       assert.strictEqual(px.current().enabled, false);
       assert.strictEqual(px.current().server, '10.0.0.1:8080', 'force 也应保留原 ProxyServer');
+    });
+  });
+
+  await t('speed 全量测速：贪心选组 / 排序 / 失败节点', async () => {
+    const calls = [];
+    const proxies = {
+      GLOBAL: { type: 'Selector', all: ['节点A', '节点B', '节点C'] },
+      '影视组': { type: 'Selector', all: ['节点A', '节点B'] },
+      'AI组': { type: 'Selector', all: ['节点C'] },
+      节点A: { type: 'Vmess' }, 节点B: { type: 'Trojan' }, 节点C: { type: 'Shadowsocks' },
+    };
+    const ctx = { cfg: config.load(paths.createPaths(TMP)), logger: quietLogger };
+    await withFakeProcess({
+      status: () => ({ running: true, pid: 1 }),
+      controllerRequest: async (c, path) => {
+        calls.push(path);
+        if (path === '/proxies') return { status: 200, data: { proxies } };
+        if (path.indexOf('/group/GLOBAL/delay') === 0) {
+          return { status: 200, data: { 节点A: 120, 节点B: 40, 节点C: 0 } };
+        }
+        return { status: 200, data: {} };
+      },
+    }, async (speed) => {
+      const out = await speed.run(ctx, [], { group: [] });
+      const groupCalls = calls.filter((c) => c.indexOf('/group/') === 0);
+      assert.strictEqual(groupCalls.length, 1, 'GLOBAL 覆盖全量，只应请求一次');
+      assert.ok(groupCalls[0].indexOf('/group/GLOBAL/delay') === 0);
+      assert.ok(groupCalls[0].includes('timeout=3000'));
+      assert.strictEqual(out.stats.total, 3);
+      assert.strictEqual(out.stats.ok, 2, '延迟为 0 视为失败');
+      assert.strictEqual(out.stats.failed, 1);
+      assert.deepStrictEqual(out.results.map((r) => r.name), ['节点B', '节点A']);
+      assert.deepStrictEqual(out.results.map((r) => r.delay), [40, 120]);
+      assert.deepStrictEqual(out.failures, ['节点C']);
+    });
+  });
+
+  await t('speed 多组合并取最小 / --group 过滤 / 未运行拒绝', async () => {
+    const proxies = {
+      G1: { type: 'Selector', all: ['A', 'B'] },
+      G2: { type: 'Selector', all: ['B', 'C'] },
+    };
+    const responses = { '/group/G1/delay': { A: 100, B: 50 }, '/group/G2/delay': { B: 30, C: 200 } };
+    const ctx = { cfg: config.load(paths.createPaths(TMP)), logger: quietLogger };
+    const calls = [];
+    const fake = {
+      status: () => ({ running: true, pid: 1 }),
+      controllerRequest: async (c, path) => {
+        calls.push(path);
+        if (path === '/proxies') return { status: 200, data: { proxies } };
+        for (const [k, v] of Object.entries(responses)) {
+          if (path.indexOf(k) === 0) return { status: 200, data: v };
+        }
+        return { status: 200, data: {} };
+      },
+    };
+    await withFakeProcess(fake, async (speed) => {
+      const out = await speed.run(ctx, [], { group: [] });
+      assert.strictEqual(calls.filter((c) => c.indexOf('/group/') === 0).length, 2);
+      assert.deepStrictEqual(out.results.map((r) => [r.name, r.delay]),
+        [['B', 30], ['A', 100], ['C', 200]], '同名节点应取最小延迟');
+    });
+
+    calls.length = 0;
+    await withFakeProcess(fake, async (speed) => {
+      const out = await speed.run(ctx, [], { group: ['G2'] });
+      assert.strictEqual(out.stats.total, 2);
+      assert.deepStrictEqual(out.results.map((r) => [r.name, r.delay]), [['B', 30], ['C', 200]]);
+      assert.ok(calls.filter((c) => c.indexOf('/group/') === 0)
+        .every((c) => c.indexOf('/group/G2/delay') === 0), '只应请求指定组');
+      await assert.rejects(() => speed.run(ctx, [], { group: ['不存在的组'] }),
+        (e) => e && e.code === 'E_SPEED_BAD_GROUP');
+    });
+
+    await withFakeProcess({
+      status: () => ({ running: false, reason: 'no-pid' }),
+      controllerRequest: async () => null,
+    }, async (speed) => {
+      await assert.rejects(() => speed.run(ctx, [], { group: [] }),
+        (e) => e && e.code === 'E_SPEED_NO_KERNEL');
     });
   });
 

@@ -54,6 +54,7 @@ metactl status
 | --- | --- |
 | `init` | **添加订阅**：拉取订阅、生成并校验配置。`--sub <地址>` 首次必填，之后可省略以复用已保存地址 |
 | `fix` | **断网自救**：清除关机残留的 metactl 系统代理，一键恢复上网（也可写 `proxy fix`；幂等，可反复执行） |
+| `speed` | **节点延迟测速**：全量节点按延迟排行（需内核正在运行），见下节 |
 | `kernel status` | 查看已安装内核的版本、架构、大小与 sha256 校验信息（默认动作，可直接写 `kernel`） |
 | `kernel install` | 手动补装内核（`postinstall` 失败或主动跳过时使用）；已存在且为最新版则跳过 |
 | `kernel update` | 强制检查并升级到官方最新版 |
@@ -73,6 +74,7 @@ metactl status
 - `--mirror <前缀>` 或环境变量 `METACTL_MIRROR`：为内核 / Geo 数据下载指定镜像前缀（受限网络自行指定，源码不内置任何镜像域名；sha256 始终按官方 digest 校验）
 - `--force`：`proxy off --force` 仅关闭代理而不恢复；`fix --force` 强制关闭非 metactl 设置的代理（仅置 `ProxyEnable=0`，保留原值）
 - `--home <目录>` 或环境变量 `METACTL_HOME`：覆盖运行态目录
+- `speed` 的选项：`--group <名称>`（可重复）、`--url <地址>`、`--timeout <毫秒>`、`--limit <n>`，见「节点延迟测速」
 - `--json`：输出机器可读 JSON；`--quiet`；`-v, --verbose`
 
 ### 安装阶段的环境变量
@@ -161,6 +163,33 @@ metactl proxy fix
 
 `--quiet` 只抑制正常输出，不会隐藏真正的错误。该快捷方式含绝对路径，换到别的电脑后需要重新创建。
 
+## 节点延迟测速
+
+`speed` 复用 mihomo 内置的节点延迟测试接口，测的是**各节点到测试地址的往返延迟（RTT）**，不是下载带宽。请求由内核直接发出、不经过本机系统代理，只是一次轻量探测，几乎不消耗订阅流量。
+
+前提：**内核正在运行**（`metactl start`）。
+
+```bat
+metactl speed                        :: 全量节点，按延迟从快到慢排行
+metactl speed --limit 10             :: 只看最快的 10 个
+metactl speed --group GLOBAL         :: 只测指定代理组（可重复）
+metactl speed --url https://example.com --timeout 5000
+metactl speed --json                 :: 机器可读结果（含组信息、全部结果与失败节点）
+```
+
+实现要点：从 `/proxies` 收集所有代理组的候选节点，用贪心选**最少的组**覆盖全部节点（多数订阅里 `GLOBAL` 一个组就含所有节点，因此只发一次请求），同名节点合并时取最小延迟，再排序输出统计（最快 / 最慢 / 平均 / 成功失败数）。超时或不可用的节点不进排行，只在 `--json` 的 `failures` 里列出。
+
+选项：
+
+- `--group <名称>`：只测指定代理组，可重复传；组名见 `metactl speed --json` 的 `groups`
+- `--url <地址>`：默认 Clash 常用的 `generate_204` 探测地址
+- `--timeout <毫秒>`：单节点超时，默认 3000，范围 200–30000
+- `--limit <n>`：只显示延迟最低的前 n 个
+
+> 说明：这是延迟测试，**不测下载速度**。带宽测速需要真实下载文件、会明显消耗订阅流量，MVP 不做。
+>
+> 排行包含订阅里全部候选策略，因此可能看到 `DIRECT` 这类内置策略，以及部分订阅商放置的「剩余流量」「打不开网站请...」等信息节点；它们同样会被探测，属于订阅原文内容，工具不擅自过滤。
+
 ## 常见问题
 
 | 现象 | 处理 |
@@ -178,6 +207,8 @@ metactl proxy fix
 | `E_DEPS_MISSING` | 先在项目目录执行 `npm install` |
 | `E_NODE_TOO_OLD` | 需要 Node.js 16.20.2 或更高 |
 | 开机后连不上网 | 忘了 `proxy off` 就关机，系统代理残留指向已停掉的内核；执行 `metactl fix` 一键恢复，或按上节配置开机自愈 |
+| `E_SPEED_NO_KERNEL` | 测速需要内核在跑，先执行 `metactl start` |
+| 测速全部节点超时 | 检查节点可用性与 `--url` 是否可达，可调大 `--timeout`；`--json` 的 `failures` 会列出失败节点 |
 
 ## 自检与开发
 
@@ -190,4 +221,4 @@ node bin\cli.js test           :: 校验真实运行态
 
 ## MVP 明确不做
 
-不打包独立 exe、不要求目标机免装 Node、不发布到 npm；TUN、服务化、开机自启、WinHTTP / PAC、per-app 代理；base64 订阅、定时更新、多订阅合并、订阅转换；节点选择 / 测速 / 规则编辑 / 流量面板 / external-ui；GUI、国际化、自升级；非 Windows 平台；任何复用本机其他客户端内核的方式。
+不打包独立 exe、不要求目标机免装 Node、不发布到 npm；TUN、服务化、开机自启、WinHTTP / PAC、per-app 代理；base64 订阅、定时更新、多订阅合并、订阅转换；节点选择 / 带宽测速 / 规则编辑 / 流量面板 / external-ui（节点**延迟**测速已由 `speed` 支持）；GUI、国际化、自升级；非 Windows 平台；任何复用本机其他客户端内核的方式。
