@@ -1,0 +1,41 @@
+# 测试用订阅快照（全部为假数据）
+port: 7890
+socks-port: 7891
+mixed-port: 7890
+allow-lan: true
+mode: global
+log-level: debug
+ipv6: true
+external-controller: 0.0.0.0:9090
+external-controller-pipe: '\\.\pipe\example'
+external-ui: ./ui
+bind-address: 0.0.0.0
+redir-port: 7892
+tun:
+  enable: true
+  stack: gvisor
+  auto-route: true
+dns:
+  enable: true
+  listen: 0.0.0.0:53
+  nameserver:
+    - https://dns.example.com/dns-query
+base: &base
+  type: http
+  server: example.com
+  port: 443
+proxies:
+  - <<: *base
+    name: 测试节点-A
+  - name: 测试节点-B
+    type: socks5
+    server: example.com
+    port: 1080
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - 测试节点-A
+      - 测试节点-B
+rules:
+  - MATCH,PROXY

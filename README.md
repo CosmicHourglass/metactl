@@ -1,0 +1,129 @@
+# metactl
+
+仅 Windows 的命令行工具，用 Node.js 管理 [mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo) 内核：拉取订阅 → 下载官方内核 → 生成配置 → 启停进程 → 一键设置/恢复系统代理。
+
+一条主线：`init` → `start` → `proxy on` 上网 → `proxy off` → `stop`。
+
+## 运行前提
+
+- Windows（系统代理走 HKCU 注册表，**不需要管理员权限**）
+- Node.js **>= 16.20.2** 与 npm
+- 首次使用需要联网执行一次 `npm install`（依赖约 1 MB，全部为纯 JS 包）；之后运行不需要联网
+
+工具不依赖任何本机已装的其他代理客户端，内核唯一来源是 mihomo 官方 GitHub Releases。下载主路径走 GitHub API 的 release asset 端点（避免依赖常被阻断的 `github.com`），并自动识别标准 `HTTPS_PROXY` / `NO_PROXY` 环境变量建立 CONNECT 隧道；直连失败时会回退到代理，再回退到官方发布页直链。所有下载均按 GitHub 官方 `sha256` digest 校验。
+
+## 快速开始
+
+在项目目录打开 **cmd** 或 **PowerShell**：
+
+```bat
+npm install
+node bin\cli.js init --sub "https://example.com/sub/<token>/clash#MySub"
+node bin\cli.js start
+node bin\cli.js proxy on
+```
+
+此时浏览器等应用会通过 `127.0.0.1:17890` 走代理。用完：
+
+```bat
+node bin\cli.js proxy off
+node bin\cli.js stop
+```
+
+把项目目录加入 `PATH` 后，也可以直接用仓库根的 `metactl.cmd`：
+
+```bat
+metactl status
+```
+
+`metactl.cmd` 用 `%~dp0` 定位自身，换盘符、路径含空格或中文都可用。`node bin\cli.js <命令>` 永远可用，不依赖 PATH 或 npm link。
+
+## 命令
+
+| 命令 | 说明 |
+| --- | --- |
+| `init` | 拉取订阅、下载官方内核、生成并校验配置。`--sub <地址>` 首次必填，之后可省略以复用已保存地址 |
+| `start` | 启动内核（**不**自动开系统代理） |
+| `stop` | 停止内核（**不**自动关系统代理） |
+| `restart` | 重启内核，系统代理设置保持不变 |
+| `status` | 查看初始化、内核、订阅流量、进程、控制器、系统代理、端口状态 |
+| `test` | 自检运行态：内核文件、配置、端口、控制器密钥、`mihomo -t` |
+| `proxy on` | 开启系统代理并备份用户原有设置 |
+| `proxy off` | 关闭系统代理并**精确恢复**开启前的设置 |
+| `version` | 显示工具版本、Node 版本、运行态目录 |
+
+常用选项：
+
+- `--sub <地址>`：init 的订阅地址（地址含 token，只存本地 `.runtime/`）
+- `--force`：init 强制重下内核；`proxy off --force` 仅关闭代理而不恢复
+- `--arch auto|x64|ia32|arm64`、`--compatible`：选择内核架构 / 兼容版
+- `--mirror <前缀>` 或环境变量 `METACTL_MIRROR`：为 GitHub 下载指定镜像前缀（受限网络自行指定，源码不内置任何镜像域名；sha256 始终按官方 digest 校验）
+- `--no-kernel`：仅刷新订阅与配置，跳过内核下载
+- `--home <目录>` 或环境变量 `METACTL_HOME`：覆盖运行态目录
+- `--json`：输出机器可读 JSON；`--quiet`；`-v, --verbose`
+
+退出码：`0` 成功、`1` 内部错误、`2` 用法错误、`10` 环境问题、`11` 未初始化、`12` 订阅、`13` 内核、`14` 配置、`15` 已运行、`17` 端口占用、`18` 启动/探活失败、`19` 注册表被拦截、`20` 外来代理快照。
+
+## 换一台 Windows 电脑使用
+
+1. 安装 Node.js >= 16.20.2 与 npm
+2. 复制**整个项目目录**到任意路径（含空格/中文也可以）
+3. 若目标机没有 `node_modules`，执行 `npm install`（推荐 `npm ci`，需联网，会按 `package-lock.json` 逐字节还原依赖）
+4. `node bin\cli.js version` 确认能跑
+5. 如果 `.runtime/` 一起带过来了，内核与配置可直接复用，直接 `start`；否则重新 `init --sub <订阅地址>`
+6. `metactl.cmd` 可直接用；`npm link` 是可选的，但它会生成带绝对路径的链接，换机后需重做，**不要作为唯一入口**
+
+跨机时工具会自动识别 `.runtime/` 来自其他机器或路径：清理旧的 PID 记录、隔离旧的系统代理快照，绝不会拿旧 PID 去结束新机器上的无关进程。内核与配置仍可复用。
+
+## 运行态数据 `.runtime/`
+
+所有状态都在项目目录内，便于整目录带走：
+
+```
+config.json            端口 / mode / 日志级别 / 控制器密钥等偏好（可手工编辑）
+profile.yaml           订阅原文快照
+profile.meta.json      订阅地址、显示名、流量与到期信息
+config.yaml            最终生成的配置
+config.yaml.bak        上一版配置（单代回滚）
+bin/mihomo.exe         内核
+bin/kernel.json        内核版本与校验信息
+state/                 实例指纹、PID、系统代理备份
+logs/                  内核输出与工具日志
+tmp/ data/             临时文件与内核工作目录
+```
+
+> **安全警告**：`profile.yaml`、`profile.meta.json`、`config.json`、`config.yaml` 含订阅 token 与控制器密钥。`.runtime/` 已加入 `.gitignore`，**不要提交、打包外发或公开分享**。整目录拷贝给他人前请先删除 `.runtime/`。
+
+## 关于系统代理
+
+- 修改的是当前用户的 `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` 下的 `ProxyEnable` / `ProxyServer` / `ProxyOverride` 三个键，无需管理员。
+- `proxy on` 会先备份三个键的原值；`proxy off` 精确恢复（原本不存在的键会删除）。刷新用系统自带的 PowerShell 通知已打开的程序。
+- **Node、curl、git 默认不读 Windows 系统代理**。验证请用浏览器，或 `curl.exe -x http://127.0.0.1:17890 https://example.com`。
+- 内核未运行时 `proxy on` 会拒绝执行，避免把流量指向不存在的端口导致断网。
+- 若安全软件或组策略拦截了 `reg.exe` / PowerShell，工具会给出 `E_REGISTRY_DENIED` 提示；请在普通终端运行或放行后重试。
+
+## 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| `E_PORT_IN_USE` | 改 `.runtime/config.json` 的 `ports` 段后重新 `init`，或结束占用程序 |
+| `E_SUB_INVALID_YAML` | 订阅返回了 HTML / base64；MVP 只支持原生 Clash YAML 明文，请换用对应格式的订阅链接 |
+| `E_KERNEL_CHECKSUM` / 下载失败 | 网络问题或 CDN 干扰；已有内核不会被删除，重试 `init` 即可。国内网络可指定 `--mirror <前缀>` 加速 |
+| `mihomo -t` 提示无法下载 MMDB / Geo 数据 | 订阅含 `GEOIP` / `GEOSITE` 规则时内核需要本地 geodata 文件；CLI 会自动补下到 `.runtime/data/` 后重试校验，也可手动放入 |
+| `E_NOT_INITIALIZED` | 先执行 `init` |
+| `status` 提示「来自其他机器或路径」 | 正常运行态迁移，PID 与代理快照已隔离，`start` 即可 |
+| `E_PROXY_BACKUP_FOREIGN` | 代理备份是别的机器留下的，用 `proxy off --force` 仅关闭代理 |
+| `E_DEPS_MISSING` | 先在项目目录执行 `npm install` |
+| `E_NODE_TOO_OLD` | 需要 Node.js 16.20.2 或更高 |
+
+## 自检与开发
+
+```bat
+npm test        :: 运行单元测试（不联网、不启动内核）
+npm run scan    :: 扫描源码，禁止出现任何本机硬编码路径或敏感字面量
+node bin\cli.js test   :: 校验真实运行态
+```
+
+## MVP 明确不做
+
+不打包独立 exe、不要求目标机免装 Node、不发布到 npm；TUN、服务化、开机自启、WinHTTP / PAC、per-app 代理；base64 订阅、定时更新、多订阅合并、订阅转换；节点选择 / 测速 / 规则编辑 / 流量面板 / external-ui；GUI、国际化、自升级；非 Windows 平台；任何复用本机其他客户端内核的方式。

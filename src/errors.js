@@ -1,0 +1,74 @@
+'use strict';
+
+const { EXIT } = require('./constants');
+
+// code -> 退出码映射。未列出的 code 落到 INTERNAL。
+const CODE_EXIT = {
+  E_UNKNOWN: EXIT.INTERNAL,
+  E_USAGE: EXIT.USAGE,
+  E_NODE_TOO_OLD: EXIT.ENV,
+  E_DEPS_MISSING: EXIT.ENV,
+  E_UNSUPPORTED_PLATFORM: EXIT.ENV,
+  E_NOT_INITIALIZED: EXIT.NOT_INITIALIZED,
+  E_SUB_FETCH_FAILED: EXIT.SUBSCRIPTION,
+  E_SUB_INVALID_YAML: EXIT.SUBSCRIPTION,
+  E_SUB_BAD_URL: EXIT.SUBSCRIPTION,
+  E_SUB_HTTP: EXIT.SUBSCRIPTION,
+  E_KERNEL_ASSET_NOT_FOUND: EXIT.KERNEL,
+  E_KERNEL_DOWNLOAD_FAILED: EXIT.KERNEL,
+  E_KERNEL_CHECKSUM: EXIT.KERNEL,
+  E_KERNEL_UNPACK: EXIT.KERNEL,
+  E_KERNEL_EXE_NOT_FOUND: EXIT.KERNEL,
+  E_KERNEL_BUSY: EXIT.KERNEL,
+  E_GITHUB_API: EXIT.KERNEL,
+  E_GITHUB_RATE_LIMIT: EXIT.KERNEL,
+  E_CONFIG_INVALID: EXIT.CONFIG,
+  E_CONFIG_WRITE: EXIT.CONFIG,
+  E_TEST_FAILED: EXIT.CONFIG,
+  E_SECRET_MISSING: EXIT.CONFIG,
+  E_ALREADY_RUNNING: EXIT.ALREADY_RUNNING,
+  E_NOT_RUNNING: EXIT.NOT_RUNNING,
+  E_PORT_IN_USE: EXIT.PORT_IN_USE,
+  E_SPAWN_FAILED: EXIT.START_FAILED,
+  E_KERNEL_EXIT: EXIT.START_FAILED,
+  E_HEALTH_TIMEOUT: EXIT.START_FAILED,
+  E_HEALTH_UNAUTHORIZED: EXIT.START_FAILED,
+  E_STOP_FAILED: EXIT.START_FAILED,
+  E_PID_REUSED: EXIT.START_FAILED,
+  E_REGISTRY_DENIED: EXIT.REGISTRY,
+  E_REG_FAILED: EXIT.REGISTRY,
+  E_PROXY_SET_FAILED: EXIT.REGISTRY,
+  E_PROXY_REFRESH_FAILED: EXIT.REGISTRY,
+  E_PROXY_NOT_RUNNING: EXIT.NOT_RUNNING,
+  E_PROXY_RESTORE_FAILED: EXIT.REGISTRY,
+  E_PROXY_BACKUP_FOREIGN: EXIT.FOREIGN_BACKUP,
+  E_IO: EXIT.INTERNAL,
+  E_PERMISSION: EXIT.INTERNAL,
+};
+
+class AppError extends Error {
+  constructor(code, message, hint, cause) {
+    super(message);
+    this.name = 'AppError';
+    this.code = code;
+    this.hint = hint || '';
+    this.cause = cause || null;
+    this.exitCode = CODE_EXIT[code] != null ? CODE_EXIT[code] : EXIT.INTERNAL;
+  }
+}
+
+function fail(code, message, hint, cause) {
+  throw new AppError(code, message, hint, cause);
+}
+
+function wrap(code, message, hint, cause) {
+  if (cause instanceof AppError) return cause;
+  return new AppError(code, message, hint, cause);
+}
+
+function toExitCode(err) {
+  if (err instanceof AppError) return err.exitCode;
+  return EXIT.INTERNAL;
+}
+
+module.exports = { AppError, CODE_EXIT, fail, wrap, toExitCode };
