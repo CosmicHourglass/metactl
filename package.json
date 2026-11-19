@@ -1,6 +1,6 @@
 {
   "name": "metactl",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Windows-only CLI to install, run and system-proxy mihomo (Clash.Meta)",
   "type": "commonjs",
@@ -25,7 +25,8 @@
     "postinstall": "node scripts/postinstall.js",
     "start": "node bin/cli.js",
     "test": "node test/run.js",
-    "scan": "node scripts/scan-forbidden.js"
+    "scan": "node scripts/scan-forbidden.js",
+    "build:bundle": "node scripts/build-bundle.js"
   },
   "dependencies": {
     "commander": "11.1.0",

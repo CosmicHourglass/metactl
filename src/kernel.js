@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const yauzl = require('yauzl');
 const { download } = require('./http');
 const github = require('./github');
@@ -74,11 +75,72 @@ function replaceExe(p) {
   }
 }
 
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const rs = fs.createReadStream(file);
+    rs.on('data', (c) => hash.update(c));
+    rs.on('end', () => resolve(hash.digest('hex')));
+    rs.on('error', reject);
+  });
+}
+
+// 从本地 zip 安装：慢速网络（下载反复超时）或完全离线时用。
+// 不删除用户提供的文件；有 --sha256 就校验，没有则如实标注未比对官方 digest。
+async function installFromFile(ctx, o, arch, compatible) {
+  const { p, logger } = ctx;
+  const src = path.resolve(o.zipPath);
+  if (!fs.existsSync(src)) {
+    fail('E_KERNEL_PACKAGE_MISSING', `找不到本地内核包: ${src}`,
+      '请确认路径正确；也可用 metactl kernel install 直接联网下载');
+  }
+  const stat = fs.statSync(src);
+  if (!stat.isFile() || stat.size < 1024 * 1024) {
+    fail('E_KERNEL_PACKAGE_MISSING', '本地内核包不像有效的 mihomo 压缩包',
+      '官方 mihomo-windows-amd64 zip 约 22 MB，请确认文件完整后重试');
+  }
+
+  logger.info(`使用本地内核包 ${path.basename(src)} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+  const sha = await sha256File(src);
+  const expected = String(o.sha256 || '').trim().toLowerCase();
+  if (expected && expected !== sha) {
+    fail('E_KERNEL_CHECKSUM', '本地内核包 sha256 与 --sha256 不一致',
+      '文件可能损坏或被替换，请重新获取');
+  }
+  logger.ok(`sha256 ${sha.slice(0, 12)}...${expected ? '（已与 --sha256 比对）' : '（未比对官方 digest）'}`);
+
+  try {
+    fs.rmSync(p.mihomoNew, { force: true });
+    await extractExe(src, p.mihomoNew);
+    replaceExe(p);
+  } catch (e) {
+    try { fs.rmSync(p.mihomoNew, { force: true }); } catch (_) { /* ignore */ }
+    if (e instanceof AppError) throw e;
+    throw wrap('E_KERNEL_UNPACK', '内核解压失败', '请确认这是 mihomo 官方 zip（内含 .exe）', e);
+  }
+
+  const info = {
+    tag: 'local',
+    asset: path.basename(src),
+    sha256: sha,
+    size: stat.size,
+    arch,
+    compatible: !!compatible,
+    digestVerified: !!expected,
+    downloadedAt: new Date().toISOString(),
+  };
+  writeAtomic(p.kernelJson, JSON.stringify(info, null, 2) + '\n');
+  logger.ok(`内核就位（本地包） -> ${path.basename(p.mihomoExe)}`);
+  return Object.assign({}, info, { skipped: false });
+}
+
 async function install(ctx, opts) {
   const { p, cfg, logger } = ctx;
   const o = opts || {};
   const arch = o.arch && o.arch !== 'auto' ? o.arch : require('./config').resolveArch(cfg);
   const compatible = o.compatible == null ? !!cfg.kernel.compatible : !!o.compatible;
+
+  if (o.zipPath) return installFromFile(ctx, o, arch, compatible);
 
   const release = await github.latestRelease();
   const asset = github.assetFor(release, arch, compatible);
@@ -167,4 +229,4 @@ async function install(ctx, opts) {
   return Object.assign({}, info, { skipped: false });
 }
 
-module.exports = { install, extractExe, safeEntryName };
+module.exports = { install, installFromFile, extractExe, safeEntryName, sha256File };

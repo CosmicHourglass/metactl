@@ -3,6 +3,9 @@
 // 所有路径都由 __dirname / os.homedir / 环境变量派生，绝不写死盘符或用户名。
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+
+const BUNDLE_MARKER = 'bundle.json';
 
 function detectRoot() {
   // 从 src/ 向上找含 metactl 的 package.json；不用 cwd。
@@ -21,10 +24,39 @@ function detectRoot() {
   return path.resolve(__dirname, '..');
 }
 
+// 打包安装模式：程序根下有 bundle.json（由 scripts/build-bundle.js 生成）。
+function isBundle(programRoot) {
+  try {
+    return fs.statSync(path.join(programRoot, BUNDLE_MARKER)).isFile();
+  } catch (_) {
+    return false;
+  }
+}
+
+function bundleMeta(programRoot) {
+  return readJson(path.join(programRoot, BUNDLE_MARKER), null);
+}
+
+// 安装模式下程序目录会被升级整体替换，运行态必须放在独立位置，
+// 否则配置、日志、Geo 数据和 58 MB 内核对每次升级都会丢一遍。
+// 源码模式下数据仍留在项目内，保持「整目录拷走即可复用」的老行为。
+//
+// install.ps1 把程序放在 <InstallDir>\current，数据放在 <InstallDir> 下：
+// 升级只替换 current，数据不受影响，且自定义安装位置（装到 D 盘）也成立。
+function defaultDataRoot(programRoot) {
+  if (!isBundle(programRoot)) return programRoot;
+  if (path.basename(programRoot).toLowerCase() === 'current') {
+    const parent = path.dirname(programRoot);
+    if (parent && parent !== programRoot) return parent;
+  }
+  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(base, 'metactl');
+}
+
 function resolveRoot(opts) {
   if (opts && opts.home) return path.resolve(opts.home);
   if (process.env.METACTL_HOME) return path.resolve(process.env.METACTL_HOME);
-  return detectRoot();
+  return defaultDataRoot(detectRoot());
 }
 
 function writeAtomic(file, data) {
@@ -105,6 +137,7 @@ function tail(file, lines) {
 }
 
 module.exports = {
+  BUNDLE_MARKER, isBundle, bundleMeta, defaultDataRoot,
   detectRoot, resolveRoot, createPaths, ensureDirs, cleanTmp,
-  writeAtomic, readJson, tail, path, fs,
+  writeAtomic, readJson, tail, path, fs, os,
 };

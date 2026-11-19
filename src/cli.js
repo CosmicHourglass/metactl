@@ -83,7 +83,9 @@ function build() {
     .option('--force', 'install 也强制重新下载；update 默认强制')
     .option('--arch <arch>', 'CPU 架构 auto|x64|ia32|arm64')
     .option('--compatible', '下载 compatible 兼容版内核（老 CPU）')
-    .option('--mirror <url>', 'GitHub 下载镜像前缀（受限网络时自行指定，源码不内置镜像）'))
+    .option('--mirror <url>', 'GitHub 下载镜像前缀（受限网络时自行指定，源码不内置镜像）')
+    .option('--from-file <zip>', '从本地 mihomo zip 安装内核（下载反复失败或完全离线时用）')
+    .option('--sha256 <hex>', '配合 --from-file 校验本地包完整性'))
     .action(makeHandler(program, 'kernel'));
 
   for (const name of ['start', 'stop', 'restart', 'status', 'test', 'version']) {

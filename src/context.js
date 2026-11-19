@@ -8,6 +8,7 @@ const instance = require('./instance');
 
 function create(opts) {
   const o = opts || {};
+  const programRoot = paths.detectRoot();
   const root = paths.resolveRoot(o);
   const p = paths.createPaths(root);
   paths.ensureDirs(p);
@@ -26,7 +27,10 @@ function create(opts) {
     logger.warn('内核与配置可复用，请执行 metactl start；如需更新订阅请执行 metactl init。');
   }
 
-  return { root, p, cfg, opts: o, migration, logger, paths, config };
+  return {
+    root, programRoot, installed: paths.isBundle(programRoot),
+    p, cfg, opts: o, migration, logger, paths, config,
+  };
 }
 
 module.exports = { create };

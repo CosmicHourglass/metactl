@@ -17,7 +17,7 @@ function requireKernel(p) {
   const info = readJson(p.kernelJson, null);
   if (info && info.tag && fs.existsSync(p.mihomoExe)) return info;
   fail('E_KERNEL_NOT_INSTALLED', '内核尚未安装，无法生成并校验配置',
-    '请在项目目录执行 npm install（会自动下载官方内核）；或执行 metactl kernel install 手动补装');
+    '请执行 metactl kernel install 安装官方内核（网络慢或离线时可用 kernel install --from-file <zip>）');
 }
 
 async function run(ctx, args, opts) {
@@ -52,12 +52,15 @@ async function run(ctx, args, opts) {
 
   // PATH 放最后：订阅、配置、-t 都成功之后才动用户环境；失败只警告，不回滚配置。
   let pathSetup = { skipped: true, reason: 'disabled' };
-  if (opts.path !== false) {
+  if (ctx.installed) {
+    // 自包含安装的 PATH 由 install.ps1 负责；这里不插手，也避免 -NoPath 被覆盖回去
+    pathSetup = { skipped: true, reason: 'managed-by-installer' };
+  } else if (opts.path !== false) {
     try {
       const dir = ctx.paths.detectRoot();
       pathSetup = userpath.ensure(dir);
-      if (pathSetup.changed) logger.ok(`已将项目目录加入用户 PATH: ${dir}`);
-      else logger.info(`项目目录已在用户 PATH 中: ${dir}`);
+      if (pathSetup.changed) logger.ok(`已加入用户 PATH: ${dir}`);
+      else logger.info(`已在用户 PATH 中: ${dir}`);
       logger.info('重新打开终端后即可直接使用 metactl 命令');
       if (pathSetup.changed && !pathSetup.notified) {
         logger.warn('环境变更通知未送达；已开着的终端需要重新打开才能看到新 PATH');
@@ -78,7 +81,7 @@ async function run(ctx, args, opts) {
     kernel: {
       tag: kernelInfo.tag, arch: kernelInfo.arch,
       compatible: !!kernelInfo.compatible, sha256: kernelInfo.sha256,
-      source: 'npm install (postinstall)',
+      source: ctx.installed ? 'install.ps1' : 'npm install (postinstall)',
     },
     config: { file: configPath, sha256: built.sha256 },
     ports: cfg.ports,
@@ -86,7 +89,7 @@ async function run(ctx, args, opts) {
   };
   logger.json(out);
   logger.info(`订阅: ${logger.maskUrl(subUrl)} (${meta.displayName})`);
-  logger.info(`内核: ${kernelInfo.tag} (由 npm install 安装，本次未改动)`);
+  logger.info(`内核: ${kernelInfo.tag}（本次未改动）`);
   logger.info(`配置: ${configPath}`);
   logger.info(`端口: mixed ${cfg.ports.mixedPort} / socks ${cfg.ports.socksPort} / http ${cfg.ports.port} / 控制 ${cfg.ports.externalController}`);
   logger.info('下一步: metactl start -> metactl proxy on');
