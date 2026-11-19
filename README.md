@@ -53,6 +53,7 @@ metactl status
 | 命令 | 说明 |
 | --- | --- |
 | `init` | **添加订阅**：拉取订阅、生成并校验配置。`--sub <地址>` 首次必填，之后可省略以复用已保存地址 |
+| `fix` | **断网自救**：清除关机残留的 metactl 系统代理，一键恢复上网（也可写 `proxy fix`；幂等，可反复执行） |
 | `kernel status` | 查看已安装内核的版本、架构、大小与 sha256 校验信息（默认动作，可直接写 `kernel`） |
 | `kernel install` | 手动补装内核（`postinstall` 失败或主动跳过时使用）；已存在且为最新版则跳过 |
 | `kernel update` | 强制检查并升级到官方最新版 |
@@ -70,7 +71,7 @@ metactl status
 - `--sub <地址>`：`init` 的订阅地址（地址含 token，只存本地 `.runtime/`）
 - `kernel` 的选项：`--force`（强制重下）、`--arch auto|x64|ia32|arm64`、`--compatible`、`--mirror <前缀>`
 - `--mirror <前缀>` 或环境变量 `METACTL_MIRROR`：为内核 / Geo 数据下载指定镜像前缀（受限网络自行指定，源码不内置任何镜像域名；sha256 始终按官方 digest 校验）
-- `--force`：`proxy off --force` 仅关闭代理而不恢复
+- `--force`：`proxy off --force` 仅关闭代理而不恢复；`fix --force` 强制关闭非 metactl 设置的代理（仅置 `ProxyEnable=0`，保留原值）
 - `--home <目录>` 或环境变量 `METACTL_HOME`：覆盖运行态目录
 - `--json`：输出机器可读 JSON；`--quiet`；`-v, --verbose`
 
@@ -127,7 +128,38 @@ tmp/ data/             临时文件与内核工作目录
 - `proxy on` 会先备份三个键的原值；`proxy off` 精确恢复（原本不存在的键会删除）。刷新用系统自带的 PowerShell 通知已打开的程序。
 - **Node、curl、git 默认不读 Windows 系统代理**。验证请用浏览器，或 `curl.exe -x http://127.0.0.1:17890 https://example.com`。
 - 内核未运行时 `proxy on` 会拒绝执行，避免把流量指向不存在的端口导致断网。
+- **关机 / 重启前记得 `metactl proxy off`**；忘记的话开机后执行 `metactl fix`（见下节）。
 - 若安全软件或组策略拦截了 `reg.exe` / PowerShell，工具会给出 `E_REGISTRY_DENIED` 提示；请在普通终端运行或放行后重试。
+
+## 断网自救
+
+`proxy on` 写的是 HKCU 注册表，**关机不会让它自动消失**。如果忘了 `proxy off` 就关机，下次开机内核没启动，浏览器却仍把流量发往 `127.0.0.1:17890`，表现就是「连不上网」。
+
+开机后发现上不了网，执行任意一条：
+
+```bat
+metactl fix
+metactl proxy fix
+```
+
+`fix` 的特点：
+
+- **幂等**：没有残留代理时什么都不做，可以反复运行，也适合放进开机启动项
+- **不依赖内核运行，也不依赖备份文件**；`proxy off` 则要求 `state/proxy-backup.json` 存在且属于当前实例
+- 有本实例备份时**精确恢复**到 `proxy on` 之前的原值；无备份时只关闭 `ProxyEnable` 并清除 metactl 自己写入的 `ProxyServer` / `ProxyOverride`
+- **不误伤你自己的代理**：当前代理指向别处（非 metactl 端口）时默认不动并给出提示；确需关闭用 `metactl fix --force`（也只把 `ProxyEnable` 置 0，保留原 `ProxyServer` 值）
+- `metactl status` 会检测这种「悬空代理」，输出 `staleProxy: true` 并给出警告
+- 刷新通知被安全软件拦下时不会报错失败：注册表已恢复，重新打开浏览器或注销一次即可生效
+
+### 开机自动恢复（可选，手动配置，工具不改系统）
+
+因为 `fix` 幂等，可以让它每次登录静默跑一次：
+
+1. `Win + R` 输入 `shell:startup`，打开当前用户的「启动」文件夹
+2. 新建快捷方式，目标填 `"<项目目录>\metactl.cmd" fix --quiet`（把 `<项目目录>` 换成实际路径）
+3. 之后每次登录自动检测；没有残留代理时不产生任何改动
+
+`--quiet` 只抑制正常输出，不会隐藏真正的错误。该快捷方式含绝对路径，换到别的电脑后需要重新创建。
 
 ## 常见问题
 
@@ -145,6 +177,7 @@ tmp/ data/             临时文件与内核工作目录
 | `E_PROXY_BACKUP_FOREIGN` | 代理备份是别的机器留下的，用 `proxy off --force` 仅关闭代理 |
 | `E_DEPS_MISSING` | 先在项目目录执行 `npm install` |
 | `E_NODE_TOO_OLD` | 需要 Node.js 16.20.2 或更高 |
+| 开机后连不上网 | 忘了 `proxy off` 就关机，系统代理残留指向已停掉的内核；执行 `metactl fix` 一键恢复，或按上节配置开机自愈 |
 
 ## 自检与开发
 

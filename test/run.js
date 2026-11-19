@@ -32,6 +32,39 @@ const system = require('../src/system');
 const proc = require('../src/process');
 const scan = require('../scripts/scan-forbidden');
 
+// 用内存注册表替换 reg.exe，让代理相关逻辑可在受限终端下单元测试。
+function withRegistry(store, fn) {
+  const sysPath = require.resolve('../src/system');
+  const pxPath = require.resolve('../src/proxy');
+  const realSys = require('../src/system');
+  const runSync = (name, args) => {
+    if (name !== 'reg.exe') return { code: 0, stdout: '', stderr: '' };
+    const verb = args[0];
+    const v = args[args.indexOf('/v') + 1];
+    if (verb === 'query') {
+      const rec = store[v];
+      if (!rec) return { code: 1, stdout: '', stderr: '' };
+      return { code: 0, stdout: `\n    ${v}    ${rec.type}    ${rec.value}\n`, stderr: '' };
+    }
+    if (verb === 'add') {
+      store[v] = { type: args[args.indexOf('/t') + 1], value: args[args.indexOf('/d') + 1] };
+      return { code: 0, stdout: '', stderr: '' };
+    }
+    if (verb === 'delete') { delete store[v]; return { code: 0, stdout: '', stderr: '' }; }
+    return { code: 1, stdout: '', stderr: '' };
+  };
+  require.cache[sysPath] = {
+    id: sysPath, filename: sysPath, loaded: true,
+    exports: Object.assign({}, realSys, { runSync }),
+  };
+  delete require.cache[pxPath];
+  try { return fn(require('../src/proxy')); }
+  finally {
+    delete require.cache[sysPath];
+    delete require.cache[pxPath];
+  }
+}
+
 async function main() {
   await t('全部模块可加载', () => {
     for (const m of [
@@ -39,7 +72,7 @@ async function main() {
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
       'process', 'proxy', 'geodata', 'cli',
     ]) require('../src/' + m);
-    for (const c of ['init', 'kernel', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const c of ['init', 'kernel', 'fix', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       require('../src/commands/' + c);
     }
   });
@@ -229,9 +262,11 @@ async function main() {
   await t('cli 装配：kernel 命令与 init 边界', () => {
     const program = require('../src/cli').build();
     const names = program.commands.map((c) => c.name());
-    for (const n of ['init', 'kernel', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const n of ['init', 'kernel', 'fix', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       assert.ok(names.includes(n), '缺少命令 ' + n);
     }
+    const fixOpts = program.commands.find((c) => c.name() === 'fix').options.map((o) => o.long);
+    assert.ok(fixOpts.includes('--force'), 'fix 缺少 --force');
     const optNames = (name) => program.commands.find((c) => c.name() === name)
       .options.map((o) => o.long);
     const initOpts = optNames('init');
@@ -317,6 +352,84 @@ async function main() {
       delete require.cache[sysPath];
       delete require.cache[require.resolve('../src/proxy')];
     }
+  });
+
+  await t('fix 断网自救：悬空代理 / 精确恢复 / 外来代理保护', () => {
+    const p = paths.createPaths(path.join(TMP, 'fix'));
+    paths.ensureDirs(p);
+    const cfg = config.load(p);
+    const ctx = { p, cfg, logger, migration: { instanceId: 'fix-test' } };
+    const ours = config.proxyServer(cfg);
+    const store = {};
+    const reset = (obj) => {
+      for (const k of Object.keys(store)) delete store[k];
+      Object.assign(store, obj);
+    };
+    const backupRec = {
+      instanceId: 'fix-test',
+      keys: {
+        ProxyEnable: { exists: true, type: 'REG_DWORD', value: '0x0' },
+        ProxyServer: { exists: false, value: null, type: null },
+        ProxyOverride: { exists: false, value: null, type: null },
+      },
+    };
+    const stale = {
+      ProxyEnable: { type: 'REG_DWORD', value: '0x1' },
+      ProxyServer: { type: 'REG_SZ', value: ours },
+      ProxyOverride: { type: 'REG_SZ', value: cfg.proxy.override },
+    };
+
+    withRegistry(store, (px) => {
+      assert.strictEqual(px.isStale({ enabled: true, server: ours }, cfg, false), true);
+      assert.strictEqual(px.isStale({ enabled: true, server: ours }, cfg, true), false);
+      assert.strictEqual(px.isStale({ enabled: false, server: ours }, cfg, false), false);
+      assert.strictEqual(px.isOurServer('http=' + ours + ';https=' + ours, cfg), true);
+      assert.strictEqual(px.isOurServer('10.0.0.1:8080', cfg), false);
+
+      // A 悬空代理 + 本实例备份 -> 精确恢复，备份清理
+      reset(stale);
+      fs.writeFileSync(p.proxyBackup, JSON.stringify(backupRec));
+      const r1 = px.repair(ctx, false);
+      assert.strictEqual(r1.changed, true);
+      assert.strictEqual(r1.mode, 'restored');
+      assert.strictEqual(px.current().enabled, false);
+      assert.strictEqual(px.current().server, null);
+      assert.strictEqual(fs.existsSync(p.proxyBackup), false, '备份应被清理');
+
+      // B 悬空代理 + 无备份 -> 只清理 metactl 写入的值
+      reset(stale);
+      try { fs.rmSync(p.proxyBackup, { force: true }); } catch (_) { /* ignore */ }
+      const r2 = px.repair(ctx, false);
+      assert.strictEqual(r2.changed, true);
+      assert.strictEqual(r2.mode, 'cleared');
+      assert.strictEqual(px.current().enabled, false);
+      assert.strictEqual(px.current().server, null);
+      assert.strictEqual(px.current().override, null);
+
+      // C 已关闭 -> 幂等 no-op
+      reset({ ProxyEnable: { type: 'REG_DWORD', value: '0x0' } });
+      const r3 = px.repair(ctx, false);
+      assert.strictEqual(r3.changed, false);
+      assert.strictEqual(r3.reason, 'already-off');
+
+      // D 外来代理 + 无备份 + 无 force -> 完全不动
+      reset({
+        ProxyEnable: { type: 'REG_DWORD', value: '0x1' },
+        ProxyServer: { type: 'REG_SZ', value: '10.0.0.1:8080' },
+      });
+      const r4 = px.repair(ctx, false);
+      assert.strictEqual(r4.changed, false);
+      assert.strictEqual(r4.reason, 'foreign-proxy');
+      assert.strictEqual(px.current().enabled, true);
+      assert.strictEqual(px.current().server, '10.0.0.1:8080');
+
+      // E 外来代理 + force -> 只关闭，仍保留原 ProxyServer
+      const r5 = px.repair(ctx, true);
+      assert.strictEqual(r5.changed, true);
+      assert.strictEqual(r5.mode, 'disabled');
+      assert.strictEqual(px.current().enabled, false);
+      assert.strictEqual(px.current().server, '10.0.0.1:8080', 'force 也应保留原 ProxyServer');
+    });
   });
 
   await t('禁词扫描全绿', () => {

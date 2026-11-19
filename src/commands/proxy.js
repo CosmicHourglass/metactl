@@ -16,8 +16,9 @@ async function run(ctx, args, opts) {
     logger.json({ enabled: false, restored: r.restored, disabled: r.disabled });
     return r;
   }
-  fail('E_USAGE', 'proxy 只接受 on / off 两个动作',
-    '示例: metactl proxy on / metactl proxy off');
+  if (action === 'fix') return require('./fix').run(ctx, args, opts);
+  fail('E_USAGE', 'proxy 只接受 on / off / fix 三个动作',
+    '示例: metactl proxy on / metactl proxy off / metactl proxy fix（或简写 metactl fix）');
 }
 
 module.exports = { run };

@@ -16,6 +16,9 @@ async function run(ctx) {
   try { proxyState = proxy.current(); }
   catch (e) { proxyError = (e && e.code) || 'E_UNKNOWN'; }
 
+  // 悬空代理：注册表还指向 metactl，内核却已停 —— 关机重启后断网的典型状态
+  const staleProxy = proxyState ? proxy.isStale(proxyState, cfg, st.running) : false;
+
   let controller = null;
   if (st.running) {
     const r = await proc.controllerRequest(ctx, '/version', 1500);
@@ -41,6 +44,7 @@ async function run(ctx) {
     controller,
     proxy: proxyState,
     proxyError,
+    staleProxy,
     ports: cfg.ports,
     migrated: !!ctx.migration.migrated,
   };
@@ -58,6 +62,9 @@ async function run(ctx) {
   logger.info(`  控制器    : ${controller ? (controller.reachable ? `可达 ${controller.version || ''}` : '不可达') : (st.running ? '未知' : '内核未运行')}`);
   logger.info(`  系统代理  : ${proxyError ? `无法读取 (${proxyError})` : (proxyState && proxyState.enabled ? `开启 ${proxyState.server}` : '关闭')}`);
   logger.info(`  端口      : mixed ${cfg.ports.mixedPort} / socks ${cfg.ports.socksPort} / http ${cfg.ports.port} / ctl ${cfg.ports.externalController}`);
+  if (staleProxy) {
+    logger.warn('  警告: 系统代理仍指向 metactl 但内核未运行，可能无法上网；执行 metactl fix 一键恢复');
+  }
   if (ctx.migration.migrated) {
     logger.warn('  运行态来自其他机器或路径，已隔离旧 PID 与代理快照');
   }

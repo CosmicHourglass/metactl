@@ -12,6 +12,7 @@ const COMMANDS = {
   test: require('./commands/test'),
   init: require('./commands/init'),
   kernel: require('./commands/kernel'),
+  fix: require('./commands/fix'),
   start: require('./commands/start'),
   stop: require('./commands/stop'),
   restart: require('./commands/restart'),
@@ -24,6 +25,7 @@ const DESCRIPTIONS = {
   test: '自检运行态（内核/配置/端口/控制器）',
   init: '添加订阅：拉取订阅、生成并校验配置（内核由 npm install 安装）',
   kernel: '查看 / 补装 / 升级 mihomo 官方内核',
+  fix: '断网自救：清除关机残留的 metactl 系统代理，一键恢复上网',
   start: '启动内核（不自动开启系统代理）',
   stop: '停止内核（不自动关闭系统代理）',
   restart: '重启内核（系统代理设置保持不变）',
@@ -86,10 +88,15 @@ function build() {
       .action(makeHandler(program, name));
   }
 
+  addGlobals(program.command('fix')
+    .description(DESCRIPTIONS.fix)
+    .option('--force', '即使当前代理不是 metactl 设置的也强制关闭（仅关闭，保留原 ProxyServer 值）'))
+    .action(makeHandler(program, 'fix'));
+
   addGlobals(program.command('proxy')
-    .description('开启 / 恢复 Windows 系统代理')
-    .argument('<action>', 'on 或 off')
-    .option('--force', 'off 时仅关闭代理而不恢复（用于外来/缺失备份）'))
+    .description('开启 / 恢复 / 修复 Windows 系统代理')
+    .argument('<action>', 'on | off | fix')
+    .option('--force', 'off 时仅关闭代理而不恢复；fix 时强制关闭外来代理'))
     .action(makeHandler(program, 'proxy'));
 
   return program;

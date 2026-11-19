@@ -138,6 +138,7 @@ function on(ctx) {
   }
   const refreshed = refresh(ctx);
   logger.ok(`系统代理已开启 -> ${proxyServer(cfg)}`);
+  logger.info('提醒: 关机或重启前执行 metactl proxy off；若忘记，开机后无法上网时执行 metactl fix 一键恢复');
   logger.info('提示: Node / curl / git 默认不读系统代理；验证请用浏览器，或 curl.exe -x http://' + proxyServer(cfg));
   return { server: proxyServer(cfg), refreshed, backupCreatedAt: rec.createdAt };
 }
@@ -175,4 +176,70 @@ function off(ctx, force) {
   return { restored: true, disabled: false };
 }
 
-module.exports = { queryValue, snapshot, current, on, off, apply, restore, refresh, backup };
+// 判断 ProxyServer 是否指向本工具的 mixed 端口。
+// 兼容 "127.0.0.1:17890" 与 "http=127.0.0.1:17890;https=..." 这类多协议写法。
+function isOurServer(value, cfg) {
+  if (!value) return false;
+  const s = String(value).toLowerCase();
+  const ours = proxyServer(cfg).toLowerCase();
+  return s === ours || s.includes(ours);
+}
+
+// 悬空代理：注册表仍指向本工具端口，内核却没在跑 —— 关机后开机断网的典型原因。
+function isStale(state, cfg, running) {
+  return !!(state && state.enabled && isOurServer(state.server, cfg) && !running);
+}
+
+function clearOurs(before, cfg) {
+  disableOnly();
+  // 只删确实由 metactl 写入的值，绝不误删用户自己的代理配置
+  if (String(before.server || '').trim().toLowerCase() === proxyServer(cfg).toLowerCase()) {
+    deleteValue(REG.server);
+  }
+  if (before.override && String(before.override).trim() === cfg.proxy.override) {
+    deleteValue(REG.override);
+  }
+}
+
+// 断网自救：幂等、不依赖内核运行、不依赖备份文件。
+// 优先精确恢复 proxy on 前的原值；无备份则清理本工具写入的值；
+// 遇到不是本工具设置的代理默认不动（--force 也只把 ProxyEnable 置 0，保留原值）。
+function repair(ctx, force) {
+  const { p, cfg } = ctx;
+  const before = current();
+  const rec = readJson(p.proxyBackup, null);
+  const usable = !!(rec && rec.instanceId === ctx.migration.instanceId);
+  const mine = isOurServer(before.server, cfg);
+
+  if (!before.enabled && !mine) {
+    return {
+      changed: false, reason: 'already-off', mode: null,
+      before, after: before, refreshed: false, refreshError: null,
+    };
+  }
+  if (!mine && !usable && !force) {
+    return {
+      changed: false, reason: 'foreign-proxy', mode: null,
+      before, after: before, refreshed: false, refreshError: null,
+    };
+  }
+
+  let mode;
+  if (usable) { restore(ctx, rec); mode = 'restored'; }
+  else if (mine) { clearOurs(before, cfg); mode = 'cleared'; }
+  else { disableOnly(); mode = 'disabled'; }
+
+  let refreshed = false;
+  let refreshError = null;
+  try { refreshed = refresh(ctx); }
+  catch (e) { refreshError = (e && e.code) || 'E_UNKNOWN'; }
+  try { fs.rmSync(p.proxyBackup, { force: true }); } catch (_) { /* ignore */ }
+  let after = null;
+  try { after = current(); } catch (_) { after = before; }
+  return { changed: true, reason: 'stale-proxy', mode, before, after, refreshed, refreshError };
+}
+
+module.exports = {
+  queryValue, snapshot, current, on, off, apply, restore, refresh, backup,
+  isOurServer, isStale, clearOurs, repair,
+};
