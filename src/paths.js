@@ -37,20 +37,29 @@ function bundleMeta(programRoot) {
   return readJson(path.join(programRoot, BUNDLE_MARKER), null);
 }
 
+// npm 全局安装会把包放进 <prefix>\node_modules\metactl，升级时同样会被整体替换，
+// 因此运行态也放到用户目录，与自包含安装共用同一位置。
+function isGlobalNpm(programRoot) {
+  return String(programRoot).split(/[\\/]/).some((part) => part.toLowerCase() === 'node_modules');
+}
+
+// 安装阶段由 npm_config_global 判定；运行时由 isGlobalNpm(programRoot) 判定。
+// 两者必须指向同一个目录，否则 postinstall 装的内核 CLI 会找不到。
+function globalDataRoot() {
+  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(base, 'metactl');
+}
+
 // 安装模式下程序目录会被升级整体替换，运行态必须放在独立位置，
-// 否则配置、日志、Geo 数据和 58 MB 内核对每次升级都会丢一遍。
-// 源码模式下数据仍留在项目内，保持「整目录拷走即可复用」的老行为。
-//
-// install.ps1 把程序放在 <InstallDir>\current，数据放在 <InstallDir> 下：
-// 升级只替换 current，数据不受影响，且自定义安装位置（装到 D 盘）也成立。
+// 否则配置、日志、Geo 数据和内核每次升级都会丢一遍。
+// 源码模式（本地 npm install）数据仍留在项目内，便于整目录带走。
 function defaultDataRoot(programRoot) {
-  if (!isBundle(programRoot)) return programRoot;
+  if (!isBundle(programRoot) && !isGlobalNpm(programRoot)) return programRoot;
   if (path.basename(programRoot).toLowerCase() === 'current') {
     const parent = path.dirname(programRoot);
     if (parent && parent !== programRoot) return parent;
   }
-  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(base, 'metactl');
+  return globalDataRoot();
 }
 
 function resolveRoot(opts) {
@@ -137,7 +146,7 @@ function tail(file, lines) {
 }
 
 module.exports = {
-  BUNDLE_MARKER, isBundle, bundleMeta, defaultDataRoot,
+  BUNDLE_MARKER, isBundle, isGlobalNpm, globalDataRoot, bundleMeta, defaultDataRoot,
   detectRoot, resolveRoot, createPaths, ensureDirs, cleanTmp,
   writeAtomic, readJson, tail, path, fs, os,
 };

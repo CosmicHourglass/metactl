@@ -24,7 +24,7 @@ const COMMANDS = {
 const DESCRIPTIONS = {
   version: '显示工具、Node 与运行态目录信息',
   test: '自检运行态（内核/配置/端口/控制器）',
-  init: '添加订阅：拉取订阅、生成并校验配置，并自动把项目目录加入用户 PATH',
+  init: '添加订阅：拉取订阅、生成并校验配置',
   kernel: '查看 / 补装 / 升级 mihomo 官方内核',
   fix: '断网自救：清除关机残留的 metactl 系统代理，一键恢复上网',
   speed: '节点延迟测速：全量节点按延迟排行（需内核正在运行）',
@@ -73,8 +73,7 @@ function build() {
 
   addGlobals(program.command('init')
     .description(DESCRIPTIONS.init)
-    .option('--sub <url>', '订阅地址（首次必填；之后可省略以复用已保存地址）')
-    .option('--no-path', '不要把项目目录加入用户 PATH'))
+    .option('--sub <url>', '订阅地址（首次必填；之后可省略以复用已保存地址）'))
     .action(makeHandler(program, 'init'));
 
   addGlobals(program.command('kernel')

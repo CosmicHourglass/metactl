@@ -28,7 +28,8 @@ function create(opts) {
   }
 
   return {
-    root, programRoot, installed: paths.isBundle(programRoot),
+    root, programRoot,
+    installed: paths.isBundle(programRoot) || paths.isGlobalNpm(programRoot),
     p, cfg, opts: o, migration, logger, paths, config,
   };
 }

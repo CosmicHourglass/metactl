@@ -300,7 +300,7 @@ async function main() {
       .options.map((o) => o.long);
     const initOpts = optNames('init');
     assert.ok(initOpts.includes('--sub'));
-    assert.ok(initOpts.includes('--no-path'), 'init 缺少 --no-path');
+    assert.ok(!initOpts.includes('--no-path'), 'PATH 属于安装阶段，init 不应再带该选项');
     assert.ok(!initOpts.includes('--no-kernel'), 'init 不应再带内核选项');
     assert.ok(!initOpts.includes('--mirror'), 'init 不应再带镜像选项');
     assert.ok(!initOpts.includes('--arch'), 'init 不应再带架构选项');
@@ -540,6 +540,84 @@ async function main() {
       await assert.rejects(() => speed.run(ctx, [], { group: [] }),
         (e) => e && e.code === 'E_SPEED_NO_KERNEL');
     });
+  });
+
+  await t('安装阶段：全局 / 本地 PATH 决策与数据目录一致', () => {
+    const pi = require('../scripts/postinstall');
+    const saved = { g: process.env.npm_config_global, p: process.env.npm_config_prefix };
+    try {
+      process.env.npm_config_global = 'true';
+      process.env.npm_config_prefix = path.join(TMP, 'npm-global');
+      assert.strictEqual(pi.launcherDir(), path.join(TMP, 'npm-global'),
+        '全局安装应把 npm prefix 加入 PATH');
+      assert.strictEqual(paths.isGlobalNpm(path.join(TMP, 'npm-global', 'node_modules', 'metactl')), true);
+      assert.strictEqual(paths.isGlobalNpm(TMP), false);
+      // postinstall 与 CLI 运行时必须解析到同一数据目录
+      assert.strictEqual(
+        paths.defaultDataRoot(path.join(TMP, 'npm-global', 'node_modules', 'metactl')),
+        paths.globalDataRoot()
+      );
+      process.env.npm_config_global = 'false';
+      assert.strictEqual(pi.launcherDir(), ROOT, '本地安装应把项目根加入 PATH');
+    } finally {
+      if (saved.g === undefined) delete process.env.npm_config_global;
+      else process.env.npm_config_global = saved.g;
+      if (saved.p === undefined) delete process.env.npm_config_prefix;
+      else process.env.npm_config_prefix = saved.p;
+    }
+  });
+
+  await t('用户 PATH：reg.exe 被拦时自动切 .NET 通道', () => {
+    const sysPath = require.resolve('../src/system');
+    const upPath = require.resolve('../src/userpath');
+    const realSys = require('../src/system');
+    const dir = path.join(TMP, 'bin 目录');
+    let rec = null; // { type, value }
+    // 模拟：reg.exe 调用直接抛出被拦截错误，PowerShell 走内存注册表
+    const runSync = (name, args) => {
+      if (name === 'reg.exe') {
+        throw new errors.AppError('E_REGISTRY_DENIED', 'blocked', 'hint');
+      }
+      if (name !== 'powershell.exe') return { code: 0, stdout: '', stderr: '' };
+      const enc = args[args.indexOf('-EncodedCommand') + 1];
+      const script = Buffer.from(enc, 'base64').toString('utf16le');
+      if (script.includes('B64=')) {
+        if (!rec) return { code: 0, stdout: 'EXISTS=0\r\nTYPE=REG_EXPAND_SZ\r\nB64=\r\n', stderr: '' };
+        const b64 = Buffer.from(rec.value, 'utf8').toString('base64');
+        return { code: 0, stdout: 'EXISTS=1\r\nTYPE=' + rec.type + '\r\nB64=' + b64 + '\r\n', stderr: '' };
+      }
+      if (script.includes('FromBase64String')) {
+        const m = /FromBase64String\('([^']+)'\)/.exec(script);
+        const value = Buffer.from(m[1], 'base64').toString('utf8');
+        const type = script.includes('RegistryValueKind]::String') ? 'REG_SZ' : 'REG_EXPAND_SZ';
+        rec = { type, value };
+        return { code: 0, stdout: 'OK\r\n', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' }; // 广播通知
+    };
+    require.cache[sysPath] = {
+      id: sysPath, filename: sysPath, loaded: true,
+      exports: Object.assign({}, realSys, { runSync }),
+    };
+    delete require.cache[upPath];
+    try {
+      const up = require('../src/userpath');
+      const a = up.ensure(dir);
+      assert.strictEqual(a.changed, true, '应通过 .NET 通道写入');
+      assert.strictEqual(a.via, 'dotnet');
+      assert.strictEqual(rec.value, dir);
+      const b = up.ensure(dir);
+      assert.strictEqual(b.changed, false, '重复执行应幂等');
+      assert.strictEqual(b.reason, 'already-present');
+      // 保留既有值与类型
+      rec = { type: 'REG_SZ', value: '%USERPROFILE%\\bin' };
+      const c = up.ensure(dir);
+      assert.strictEqual(c.type, 'REG_SZ');
+      assert.strictEqual(rec.value, '%USERPROFILE%\\bin;' + dir);
+    } finally {
+      delete require.cache[sysPath];
+      delete require.cache[upPath];
+    }
   });
 
   await t('init 用户 PATH：创建 / 幂等 / 保留原值类型', () => {

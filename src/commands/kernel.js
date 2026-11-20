@@ -45,12 +45,9 @@ async function run(ctx, args, opts) {
     if (out.installed) {
       logger.info(`内核 ${out.tag} (${out.arch}${out.compatible ? ' compatible' : ''})，${(out.exeBytes / 1024 / 1024).toFixed(1)} MB`);
       logger.info(`sha256 ${String(out.sha256).slice(0, 16)}...，官方 digest 校验${out.digestVerified ? '通过' : '不可用'}`);
-      const source = out.tag === 'local'
-        ? '本地压缩包'
-        : (ctx.installed ? '自包含安装时自动下载' : 'npm install (postinstall)');
-      logger.info(`来源: ${source}；升级请执行 metactl kernel update`);
+      logger.info('升级请执行 metactl kernel update');
     } else {
-      logger.warn('内核尚未安装，请执行 npm install，或 metactl kernel install 手动补装');
+      logger.warn('内核尚未安装，请重新安装，或执行 metactl kernel install 补装');
     }
     return out;
   }
