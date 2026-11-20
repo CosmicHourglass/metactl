@@ -40,7 +40,7 @@ const RULES = [
 
 function collect() {
   const files = [];
-  for (const f of ['bin/cli.js', 'package.json', 'metactl.cmd', 'install.ps1', 'README.md']) {
+  for (const f of ['bin/cli.js', 'package.json', 'metactl.cmd', 'install.ps1', 'install-core.ps1', 'README.md']) {
     const abs = path.join(ROOT, f);
     if (fs.existsSync(abs)) files.push(abs);
   }

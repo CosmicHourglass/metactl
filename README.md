@@ -21,11 +21,13 @@ $s = irm https://raw.githubusercontent.com/CosmicHourglass/metactl/main/install.
 & ([scriptblock]::Create($s)) -Mirror https://gh-proxy.com/
 ```
 
-用本地安装包（离线或私有仓库）：
+用本地安装包（离线环境 / 不想联网下载 Release）：
 
 ```powershell
 .\install.ps1 -ZipPath .\metactl-<版本>-win32-x64.zip
 ```
+
+脚本分两层：`install.ps1` 是纯 ASCII 引导层（**无 BOM**），保证 `irm ... | iex` 能正确解析；实际逻辑在 `install-core.ps1`（UTF-8 BOM + CRLF，保留中文输出）。本地有 `install-core.ps1` 时直接用，否则引导层自动从仓库拉取；两个脚本接受同一组参数。
 
 安装脚本做的事：
 
@@ -299,7 +301,7 @@ metactl speed --json                 :: 机器可读结果（含组信息、全�
 | 测速全部节点超时 | 检查节点可用性与 `--url` 是否可达，可调大 `--timeout`；`--json` 的 `failures` 会列出失败节点 |
 | `metactl` 命令找不到 | PATH 变更不影响已打开的终端，**重新打开一个新窗口**；仍未生效就用完整路径 `%LOCALAPPDATA%\metactl\current\bin\metactl.cmd`（源码方式用 `node bin\cli.js <命令>`） |
 | `install.ps1` 下载失败 / 超时 | `github.com` 在部分网络被阻断；用 `-Mirror <镜像前缀>` 加速，或改用 `-ZipPath <本地包>` |
-| `install.ps1` 提示无法获取最新版本 | 网络不通或仓库为私有；改用 `-Version <版本>` 或 `-ZipPath` |
+| `install.ps1` 提示无法获取最新版本 | 网络不通或 GitHub API 限流；改用 `-Version <版本>` 或 `-ZipPath` |
 | `install.ps1` 报「无法替换现有安装」 | 有 metactl 命令正在运行；关闭其他终端窗口后重跑 |
 | `E_PATH_WRITE` / `E_PATH_TOO_LONG` | 用户 PATH 写入被安全软件/组策略拦截，或 PATH 过长；订阅与配置仍会正常生成。用 `--no-path` / `-NoPath` 跳过，或手动在「编辑账户的环境变量」里清理/添加 |
 
