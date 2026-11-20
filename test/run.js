@@ -97,7 +97,7 @@ async function main() {
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
       'process', 'proxy', 'geodata', 'userpath', 'cli',
     ]) require('../src/' + m);
-    for (const c of ['init', 'kernel', 'fix', 'speed', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const c of ['init', 'kernel', 'fix', 'speed', 'route', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       require('../src/commands/' + c);
     }
   });
@@ -287,7 +287,7 @@ async function main() {
   await t('cli 装配：kernel 命令与 init 边界', () => {
     const program = require('../src/cli').build();
     const names = program.commands.map((c) => c.name());
-    for (const n of ['init', 'kernel', 'fix', 'speed', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const n of ['init', 'kernel', 'fix', 'speed', 'route', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
       assert.ok(names.includes(n), '缺少命令 ' + n);
     }
     const fixOpts = program.commands.find((c) => c.name() === 'fix').options.map((o) => o.long);
@@ -462,7 +462,7 @@ async function main() {
     });
   });
 
-  await t('speed 全量测速：贪心选组 / 排序 / 失败节点', async () => {
+  await t('speed 全量测速：按节点测 / 排序 / 超时分类', async () => {
     const calls = [];
     const proxies = {
       GLOBAL: { type: 'Selector', all: ['节点A', '节点B', '节点C'] },
@@ -470,65 +470,73 @@ async function main() {
       'AI组': { type: 'Selector', all: ['节点C'] },
       节点A: { type: 'Vmess' }, 节点B: { type: 'Trojan' }, 节点C: { type: 'Shadowsocks' },
     };
-    const ctx = { cfg: config.load(paths.createPaths(TMP)), logger: quietLogger };
+    const delays = { 节点A: 120, 节点B: 40, 节点C: 0 };
+    const ctx = {
+      cfg: config.load(paths.createPaths(TMP)),
+      p: { configYaml: path.join(TMP, 'nonexistent-config.yaml') },
+      logger: quietLogger,
+    };
     await withFakeProcess({
       status: () => ({ running: true, pid: 1 }),
-      controllerRequest: async (c, path) => {
-        calls.push(path);
-        if (path === '/proxies') return { status: 200, data: { proxies } };
-        if (path.indexOf('/group/GLOBAL/delay') === 0) {
-          return { status: 200, data: { 节点A: 120, 节点B: 40, 节点C: 0 } };
-        }
+      controllerRequest: async (c, apiPath) => {
+        calls.push(apiPath);
+        if (apiPath === '/proxies') return { status: 200, data: { proxies } };
+        const m = /^\/proxies\/([^/]+)\/delay/.exec(apiPath);
+        if (m) return { status: 200, data: { delay: delays[decodeURIComponent(m[1])] } };
         return { status: 200, data: {} };
       },
     }, async (speed) => {
       const out = await speed.run(ctx, [], { group: [] });
-      const groupCalls = calls.filter((c) => c.indexOf('/group/') === 0);
-      assert.strictEqual(groupCalls.length, 1, 'GLOBAL 覆盖全量，只应请求一次');
-      assert.ok(groupCalls[0].indexOf('/group/GLOBAL/delay') === 0);
-      assert.ok(groupCalls[0].includes('timeout=3000'));
+      const nodeCalls = calls.filter((c) => c.includes('/delay'));
+      assert.strictEqual(nodeCalls.length, 3, '按节点逐个测，3 个节点各一次');
+      assert.ok(nodeCalls.every((c) => c.includes('timeout=10000')), '默认超时应为 10000');
+      assert.ok(nodeCalls.every((c) => c.includes('cp.cloudflare.com')), '无健康检查地址时用兜底地址');
+      assert.strictEqual(out.timeout, 10000);
       assert.strictEqual(out.stats.total, 3);
-      assert.strictEqual(out.stats.ok, 2, '延迟为 0 视为失败');
-      assert.strictEqual(out.stats.failed, 1);
+      assert.strictEqual(out.stats.ok, 2, '延迟为 0 视为超时');
+      assert.strictEqual(out.stats.timeout, 1);
       assert.deepStrictEqual(out.results.map((r) => r.name), ['节点B', '节点A']);
       assert.deepStrictEqual(out.results.map((r) => r.delay), [40, 120]);
       assert.deepStrictEqual(out.failures, ['节点C']);
     });
   });
 
-  await t('speed 多组合并取最小 / --group 过滤 / 未运行拒绝', async () => {
+  await t('speed 多组覆盖 / --group 过滤 / 未运行拒绝', async () => {
     const proxies = {
       G1: { type: 'Selector', all: ['A', 'B'] },
       G2: { type: 'Selector', all: ['B', 'C'] },
     };
-    const responses = { '/group/G1/delay': { A: 100, B: 50 }, '/group/G2/delay': { B: 30, C: 200 } };
-    const ctx = { cfg: config.load(paths.createPaths(TMP)), logger: quietLogger };
+    const delays = { A: 100, B: 50, C: 200 };
+    const ctx = {
+      cfg: config.load(paths.createPaths(TMP)),
+      p: { configYaml: path.join(TMP, 'nonexistent-config.yaml') },
+      logger: quietLogger,
+    };
     const calls = [];
     const fake = {
       status: () => ({ running: true, pid: 1 }),
-      controllerRequest: async (c, path) => {
-        calls.push(path);
-        if (path === '/proxies') return { status: 200, data: { proxies } };
-        for (const [k, v] of Object.entries(responses)) {
-          if (path.indexOf(k) === 0) return { status: 200, data: v };
-        }
+      controllerRequest: async (c, apiPath) => {
+        calls.push(apiPath);
+        if (apiPath === '/proxies') return { status: 200, data: { proxies } };
+        const m = /^\/proxies\/([^/]+)\/delay/.exec(apiPath);
+        if (m) return { status: 200, data: { delay: delays[decodeURIComponent(m[1])] } };
         return { status: 200, data: {} };
       },
     };
     await withFakeProcess(fake, async (speed) => {
       const out = await speed.run(ctx, [], { group: [] });
-      assert.strictEqual(calls.filter((c) => c.indexOf('/group/') === 0).length, 2);
+      assert.strictEqual(out.testedGroups.length, 2, '两个组才能覆盖 A/B/C');
       assert.deepStrictEqual(out.results.map((r) => [r.name, r.delay]),
-        [['B', 30], ['A', 100], ['C', 200]], '同名节点应取最小延迟');
+        [['B', 50], ['A', 100], ['C', 200]], '全量节点按延迟排序');
     });
 
     calls.length = 0;
     await withFakeProcess(fake, async (speed) => {
       const out = await speed.run(ctx, [], { group: ['G2'] });
       assert.strictEqual(out.stats.total, 2);
-      assert.deepStrictEqual(out.results.map((r) => [r.name, r.delay]), [['B', 30], ['C', 200]]);
-      assert.ok(calls.filter((c) => c.indexOf('/group/') === 0)
-        .every((c) => c.indexOf('/group/G2/delay') === 0), '只应请求指定组');
+      assert.deepStrictEqual(out.results.map((r) => [r.name, r.delay]), [['B', 50], ['C', 200]]);
+      const nodeCalls = calls.filter((c) => c.includes('/delay'));
+      assert.ok(nodeCalls.every((c) => /\/proxies\/(B|C)\/delay/.test(c)), '只应测指定组的节点');
       await assert.rejects(() => speed.run(ctx, [], { group: ['不存在的组'] }),
         (e) => e && e.code === 'E_SPEED_BAD_GROUP');
     });
@@ -661,6 +669,44 @@ async function main() {
       assert.strictEqual(up.buildValue('a;b;', dir), 'a;b;' + dir);
       assert.strictEqual(up.buildValue('', dir), dir);
     }, ['../src/userpath']);
+  });
+
+  await t('speed 测速参数对齐', () => {
+    const s = require('../src/commands/speed');
+    assert.strictEqual(s.DEFAULT_TIMEOUT, 10000, '默认超时应为 10000 ms');
+    assert.strictEqual(s.FALLBACK_URL, 'http://cp.cloudflare.com/generate_204');
+    assert.strictEqual(s.classifyDelay(120, 10000), 'measured');
+    assert.strictEqual(s.classifyDelay(0, 10000), 'timeout');
+    assert.strictEqual(s.classifyDelay(10000, 10000), 'timeout');
+    assert.strictEqual(s.classifyDelay(1e6, 10000), 'error');
+    const urls = { 'auto': 'http://www.gstatic.com/generate_204' };
+    assert.strictEqual(s.resolveUrl({}, urls, ['auto']), 'http://www.gstatic.com/generate_204');
+    assert.strictEqual(s.resolveUrl({ url: 'https://example.com/204' }, urls, ['auto']), 'https://example.com/204');
+    assert.strictEqual(s.resolveUrl({}, {}, []), s.FALLBACK_URL);
+    const proxies = { GLOBAL: { all: ['A', 'DIRECT'] }, A: { type: 'vmess' }, DIRECT: {} };
+    const picked = s.pickGroups(s.collectGroups(proxies), []);
+    assert.deepStrictEqual(s.leafNodes(proxies, picked.universe), ['A']);
+  });
+
+  await t('route 路线数据组装', () => {
+    const r = require('../src/commands/route');
+    const program = require('../src/cli').build();
+    assert.ok(program.commands.map((c) => c.name()).includes('route'), '缺少 route 命令');
+    const groups = r.groupRows({
+      GLOBAL: { type: 'Selector', now: 'DIRECT', all: ['A', 'DIRECT'] },
+      A: { type: 'vmess', history: [] },
+    });
+    assert.strictEqual(groups.length, 1);
+    assert.strictEqual(groups[0].now, 'DIRECT');
+    const conns = r.connectionRows([{
+      metadata: { host: 'x.example', destinationPort: 443 },
+      rule: 'DOMAIN', rulePayload: 'x.example', chains: ['group', 'node'],
+    }], 20);
+    assert.strictEqual(conns.total, 1);
+    assert.strictEqual(conns.shown[0].chains[1], 'node');
+    assert.strictEqual(r.pointsToMetactl({ enabled: true, server: '127.0.0.1:17890' }, { ports: { mixedPort: 17890 } }), true);
+    assert.strictEqual(r.pointsToMetactl({ enabled: true, server: '127.0.0.1:7892' }, { ports: { mixedPort: 17890 } }), false);
+    assert.strictEqual(r.pointsToMetactl({ enabled: false, server: '127.0.0.1:17890' }, { ports: { mixedPort: 17890 } }), false);
   });
 
   await t('禁词扫描全绿', () => {

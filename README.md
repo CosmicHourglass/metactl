@@ -50,7 +50,8 @@ metactl stop
 | `status` | 查看内核、进程、控制器与代理状态 |
 | `proxy on` / `proxy off` | 开启系统代理并备份原值 / 精确恢复 |
 | `fix` | 断网自救：清除关机残留的代理，幂等可反复执行 |
-| `speed` | 节点延迟测速排行（`--limit 10`、`--group <名称>`、`--json`） |
+| `speed` | 节点延迟测速排行（按节点测、默认超时 10000 ms、测试地址取订阅健康检查地址；`--limit 10`、`--group <名称>`、`--url <地址>`、`--timeout <ms>`、`--json`） |
+| `route` | 查看当前代理路线：系统代理指向、分流模式、策略组选中、活跃连接命中的规则与链路 |
 | `kernel status` | 查看内核版本与校验信息 |
 | `kernel install` / `kernel update` | 补装 / 升级内核 |
 | `test` | 自检运行态（内核、配置、端口、控制器） |

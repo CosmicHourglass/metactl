@@ -14,6 +14,7 @@ const COMMANDS = {
   kernel: require('./commands/kernel'),
   fix: require('./commands/fix'),
   speed: require('./commands/speed'),
+  route: require('./commands/route'),
   start: require('./commands/start'),
   stop: require('./commands/stop'),
   restart: require('./commands/restart'),
@@ -28,6 +29,7 @@ const DESCRIPTIONS = {
   kernel: '查看 / 补装 / 升级 mihomo 官方内核',
   fix: '断网自救：清除关机残留的 metactl 系统代理，一键恢复上网',
   speed: '节点延迟测速：全量节点按延迟排行（需内核正在运行）',
+  route: '查看当前代理路线：系统代理、分流模式、策略组选中与连接命中的规则',
   start: '启动内核（不自动开启系统代理）',
   stop: '停止内核（不自动关闭系统代理）',
   restart: '重启内核（系统代理设置保持不变）',
@@ -87,7 +89,7 @@ function build() {
     .option('--sha256 <hex>', '配合 --from-file 校验本地包完整性'))
     .action(makeHandler(program, 'kernel'));
 
-  for (const name of ['start', 'stop', 'restart', 'status', 'test', 'version']) {
+  for (const name of ['start', 'stop', 'restart', 'status', 'test', 'version', 'route']) {
     addGlobals(program.command(name).description(DESCRIPTIONS[name]))
       .action(makeHandler(program, name));
   }
@@ -100,8 +102,8 @@ function build() {
   addGlobals(program.command('speed')
     .description(DESCRIPTIONS.speed)
     .option('--group <name>', '只测指定代理组（可重复）', (v, prev) => { prev.push(v); return prev; }, [])
-    .option('--url <url>', '延迟测试地址（默认 Clash 的 generate_204）')
-    .option('--timeout <ms>', '单节点超时毫秒（默认 3000）')
+    .option('--url <url>', '延迟测试地址（默认取订阅健康检查地址，否则 cp.cloudflare.com）')
+    .option('--timeout <ms>', '单节点超时毫秒（默认 10000）')
     .option('--limit <n>', '只显示延迟最低的前 n 个节点'))
     .action(makeHandler(program, 'speed'));
 
