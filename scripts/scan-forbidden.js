@@ -40,7 +40,8 @@ const RULES = [
 
 function collect() {
   const files = [];
-  for (const f of ['bin/cli.js', 'package.json', 'metactl.cmd', 'install.ps1', 'install-core.ps1', 'README.md']) {
+  // install.ps1 是生成物（纯 base64 内嵌），扫描 install-core.ps1 即可覆盖其实际内容
+  for (const f of ['bin/cli.js', 'package.json', 'metactl.cmd', 'install-core.ps1', 'README.md']) {
     const abs = path.join(ROOT, f);
     if (fs.existsSync(abs)) files.push(abs);
   }

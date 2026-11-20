@@ -26,7 +26,8 @@
     "start": "node bin/cli.js",
     "test": "node test/run.js",
     "scan": "node scripts/scan-forbidden.js",
-    "build:bundle": "node scripts/build-bundle.js"
+    "build:bundle": "node scripts/build-bundle.js",
+    "build:install": "node scripts/build-install.js"
   },
   "dependencies": {
     "commander": "11.1.0",

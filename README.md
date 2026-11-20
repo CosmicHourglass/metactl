@@ -27,7 +27,7 @@ $s = irm https://raw.githubusercontent.com/CosmicHourglass/metactl/main/install.
 .\install.ps1 -ZipPath .\metactl-<版本>-win32-x64.zip
 ```
 
-脚本分两层：`install.ps1` 是纯 ASCII 引导层（**无 BOM**），保证 `irm ... | iex` 能正确解析；实际逻辑在 `install-core.ps1`（UTF-8 BOM + CRLF，保留中文输出）。本地有 `install-core.ps1` 时直接用，否则引导层自动从仓库拉取；两个脚本接受同一组参数。
+脚本分两层：`install.ps1` 是**自包含**的纯 ASCII 引导层（无 BOM），把主脚本以 base64 内嵌，因此 `irm ... | iex` 只需要一次网络请求；实际逻辑在 `install-core.ps1`（UTF-8 BOM + CRLF，保留中文输出）。改完主脚本要执行 `npm run build:install` 重新生成引导层。两者接受同一组参数。
 
 安装脚本做的事：
 
