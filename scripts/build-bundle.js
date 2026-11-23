@@ -123,6 +123,10 @@ function main() {
   copyTree(path.join(ROOT, 'bin'), path.join(stage, 'bin'), (p) => p !== path.join(ROOT, 'bin', 'metactl.cmd'));
   copyTree(path.join(ROOT, 'src'), path.join(stage, 'src'));
   fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(stage, 'package.json'));
+  // 许可证必须随包分发：项目是 GPL-3.0，随包还带 GPLv3 的 mihomo 内核
+  if (fs.existsSync(path.join(ROOT, 'LICENSE'))) {
+    fs.copyFileSync(path.join(ROOT, 'LICENSE'), path.join(stage, 'LICENSE'));
+  }
   if (fs.existsSync(path.join(ROOT, 'README.md'))) {
     fs.copyFileSync(path.join(ROOT, 'README.md'), path.join(stage, 'README.md'));
   }
