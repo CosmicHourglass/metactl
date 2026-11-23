@@ -55,7 +55,10 @@ const PROCESS = {
   healthIntervalMs: 300,
   healthMaxMs: 15000,
   stopWaitMs: 5000,
-  imageName: 'mihomo.exe',
+  imageName: 'mihomo-metactl.exe',
+  // 0.2.x 装的是 mihomo.exe。升级后仍在运行的老内核也要认得出来，
+  // 否则会被当成 PID 复用而清掉记录，老进程就成了没人管的孤儿。
+  legacyImageNames: ['mihomo.exe'],
 };
 
 // 退出码 -> 语义。AppError 的 exitCode 从这里派生。

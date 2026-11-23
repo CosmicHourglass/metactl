@@ -104,8 +104,9 @@ function createPaths(root) {
     configYaml: path.join(rt, 'config.yaml'),
     configBak: path.join(rt, 'config.yaml.bak'),
     binDir: path.join(rt, 'bin'),
-    mihomoExe: path.join(rt, 'bin', 'mihomo.exe'),
-    mihomoNew: path.join(rt, 'bin', 'mihomo.exe.new'),
+    // 内核可执行文件名。对外分发时改名，与官方 mihomo 的产物区分开。
+    mihomoExe: path.join(rt, 'bin', 'mihomo-metactl.exe'),
+    mihomoNew: path.join(rt, 'bin', 'mihomo-metactl.exe.new'),
     kernelJson: path.join(rt, 'bin', 'kernel.json'),
     stateDir: path.join(rt, 'state'),
     instanceJson: path.join(rt, 'state', 'instance.json'),

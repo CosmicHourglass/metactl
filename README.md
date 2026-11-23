@@ -12,7 +12,7 @@ Windows 上管理 [mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo) 内
 irm https://raw.githubusercontent.com/CosmicHourglass/metactl/main/install.ps1 | iex
 ```
 
-安装包自带 Node 运行时，安装脚本会自动下载内核并把命令目录写入用户 PATH。
+安装包自带 Node 运行时和 mihomo 内核，安装脚本把内核直接落盘，并把命令目录写入用户 PATH —— 全程不需要连 MetaCubeX 的 GitHub。
 
 ### 方式二：npm 全局安装（已有 Node.js 16.20.2+）
 
@@ -20,7 +20,7 @@ irm https://raw.githubusercontent.com/CosmicHourglass/metactl/main/install.ps1 |
 npm i -g metactl
 ```
 
-安装过程会自动下载内核并把 npm 全局命令目录写入用户 PATH。
+安装包同样自带 mihomo 内核，安装过程会把内核落到数据目录，并把 npm 全局命令目录写入用户 PATH。
 
 > 两种方式都只改当前用户的 PATH，**不需要管理员权限**，也不影响其他用户。
 
@@ -53,7 +53,7 @@ metactl stop
 | `speed` | 节点延迟测速排行（按节点测、默认超时 10000 ms、测试地址取订阅健康检查地址；`--limit 10`、`--group <名称>`、`--url <地址>`、`--timeout <ms>`、`--json`） |
 | `route` | 查看当前代理路线：系统代理指向、分流模式、策略组选中、活跃连接命中的规则与链路 |
 | `kernel status` | 查看内核版本与校验信息 |
-| `kernel install` / `kernel update` | 补装 / 升级内核 |
+| `kernel install` / `kernel update` | 补装 / 升级内核（联网从 MetaCubeX 官方 release 获取） |
 | `test` | 自检运行态（内核、配置、端口、控制器） |
 | `version` | 显示工具与运行环境信息 |
 | `uninstall` | 卸载：恢复系统代理原值、删内核、移除 PATH 并删除程序目录（`--purge` 连订阅与配置一起删） |
@@ -79,33 +79,14 @@ Node、curl、git 默认**不读** Windows 系统代理，验证请用浏览器�
 
 ## 卸载
 
-直接敲命令即可，不交互确认：
-
 ```bat
-metactl uninstall                  # 保留订阅快照与配置，删除内核
+metactl uninstall                  # 保留订阅快照与配置
 metactl uninstall --purge          # 连订阅快照与配置一起删除
 ```
 
-卸载做这几件事：
+卸载会恢复系统代理原值、删除内核、移除 PATH 并删除程序目录。内核正在运行时会拒绝执行，先 `metactl stop`。
 
-1. **内核在运行就拒绝**，提示先执行 `metactl stop` —— 不打断正在跑的流量。
-2. **把系统代理恢复到开启前的原值**（没有备份时只清掉 metactl 自己写进去的值，不动你自己的代理配置）。
-3. **删除内核**（`mihomo.exe`）。内核不保留，重装后执行 `metactl kernel install` 即可。
-4. **删除程序本体**并从用户 PATH 移除命令目录。
-5. 订阅快照与配置默认保留，重装后不用重新拉订阅；加 `--purge` 才连它们一起删。
-
-按安装方式分别处理：
-
-- **自包含安装**：程序目录里的 `node.exe` 正是当前进程在跑的 exe，直接删不掉 —— 先把 `current` 改名让位，再由后台进程在命令退出后删除。
-- **npm 全局安装**：调用 `npm uninstall -g metactl`（npm 全局目录是共用的，PATH 保持不动）。
-- **项目目录内运行**：只清理运行态与代理，不会删你的源码目录。
-
-也可以用安装脚本卸载：
-
-```powershell
-.\install.ps1 -Uninstall          # 保留配置与内核
-.\install.ps1 -Uninstall -Purge   # 连数据一起删
-```
+也可以用安装脚本卸载：`.\install.ps1 -Uninstall`（加 `-Purge` 连数据一起删）。
 
 ## 常见问题
 
@@ -123,6 +104,16 @@ metactl uninstall --purge          # 连订阅快照与配置一起删除
 ```bat
 npm test              :: 单元测试（不联网、不启内核）
 npm run scan          :: 禁止本机硬编码路径与敏感字面量
-npm run build:bundle  :: 打自带 Node 运行时的安装包
+npm run stage:kernel  :: 把本地 mihomo 内核暂存到 assets/（打包分发用）
+npm run build:bundle  :: 打自带 Node 运行时与内核的安装包
 npm run build:install :: 由 install-core.ps1 重新生成 install.ps1
 ```
+
+## 致谢与许可证
+
+本项目以 **GPL-3.0** 发布，源码见 [LICENSE](./LICENSE)。
+
+- 内核 [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo)：A rule-based tunnel in Go。
+  随安装包分发的 `mihomo-metactl.exe` 就是该项目的官方 release 产物（改名以区分来源），版权归其作者所有，同样以 GPL-3.0 发布。
+  具体版本见 `metactl kernel status`，对应源码见该项目的 [Releases](https://github.com/MetaCubeX/mihomo/releases) 页面上的同名标签。
+- 本工具的代码与安装脚本版权归 metactl 项目作者所有，以 GPL-3.0 发布。

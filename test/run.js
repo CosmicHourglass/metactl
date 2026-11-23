@@ -120,7 +120,69 @@ async function main() {
     assert.ok(paths.tail(f, 1).includes('x'));
     const p = paths.createPaths(TMP);
     assert.strictEqual(p.root, TMP);
-    assert.ok(p.mihomoExe.endsWith('mihomo.exe'));
+    assert.ok(p.mihomoExe.endsWith('mihomo-metactl.exe'));
+    assert.ok(p.mihomoNew.endsWith('mihomo-metactl.exe.new'));
+  });
+
+  await t('内核改名：映像名认新旧两个', () => {
+    assert.strictEqual(constants.PROCESS.imageName, 'mihomo-metactl.exe');
+    assert.ok(constants.PROCESS.legacyImageNames.includes('mihomo.exe'),
+      '0.2.x 的旧内核名也要认，否则升级后老进程会成孤儿');
+  });
+
+  await t('stage-kernel：暂存内核并算出 exe 指纹', () => {
+    const stageKernel = require('../scripts/stage-kernel');
+    const root = path.join(TMP, 'stage');
+    const binDir = path.join(root, '.runtime', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const exe = path.join(binDir, 'mihomo-metactl.exe');
+    fs.writeFileSync(exe, 'fake kernel binary');
+    fs.writeFileSync(path.join(binDir, 'kernel.json'),
+      JSON.stringify({ tag: 'v-test', arch: 'x64', compatible: false }));
+    const r = stageKernel.stage({ root });
+    assert.ok(r.exe.endsWith(path.join('assets', 'mihomo-metactl.exe')));
+    assert.ok(r.meta.endsWith(path.join('assets', 'kernel.json')));
+    const meta = JSON.parse(fs.readFileSync(r.meta, 'utf8'));
+    assert.strictEqual(meta.tag, 'v-test');
+    assert.strictEqual(meta.exeName, 'mihomo-metactl.exe');
+    assert.strictEqual(meta.exeSha256, stageKernel.sha256File(exe));
+    assert.strictEqual(meta.exeBytes, fs.statSync(exe).size);
+    // 找不到内核时必须明确报错，不能静默产出一个空包
+    assert.throws(() => stageKernel.stage({ root: path.join(TMP, 'no-kernel-here') }),
+      /找不到 mihomo 内核/);
+  });
+
+  await t('installBundled：校验后落盘并清理旧内核', async () => {
+    const crypto = require('crypto');
+    const root = path.join(TMP, 'bundled');
+    const p = paths.createPaths(root);
+    paths.ensureDirs(p);
+    const src = path.join(TMP, 'bundled-src.exe');
+    fs.writeFileSync(src, 'bundled kernel bytes');
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(src)).digest('hex');
+    const metaFile = path.join(TMP, 'bundled-meta.json');
+    fs.writeFileSync(metaFile, JSON.stringify({ tag: 'v-bundled', exeSha256: sha }));
+    // 旧版本留下的内核文件
+    fs.writeFileSync(path.join(p.binDir, 'mihomo.exe'), 'old kernel');
+
+    const ctx = { p, cfg: config.load(p), logger, migration: { instanceId: 'test' } };
+    const info = await kernel.installBundled(ctx, src, metaFile);
+    assert.strictEqual(info.installedFrom, 'bundle');
+    assert.ok(fs.existsSync(p.mihomoExe), '内核应落到运行态目录');
+    assert.strictEqual(fs.readFileSync(p.mihomoExe, 'utf8'), 'bundled kernel bytes');
+    assert.strictEqual(fs.existsSync(path.join(p.binDir, 'mihomo.exe')), false,
+      '旧内核文件应被清掉');
+    const written = JSON.parse(fs.readFileSync(p.kernelJson, 'utf8'));
+    assert.strictEqual(written.tag, 'v-bundled');
+    assert.strictEqual(written.exeSha256, sha);
+
+    // 被改过的内核必须拒绝落盘
+    const bad = path.join(TMP, 'bundled-bad.exe');
+    fs.writeFileSync(bad, 'tampered');
+    await assert.rejects(
+      () => kernel.installBundled(ctx, bad, metaFile),
+      (e) => e && e.code === 'E_KERNEL_CHECKSUM'
+    );
   });
 
   await t('config 合并 / 端口校验 / 端口助手', () => {
@@ -308,6 +370,46 @@ async function main() {
     for (const o of ['--force', '--arch', '--compatible', '--mirror']) {
       assert.ok(kernelOpts.includes(o), 'kernel 缺少选项 ' + o);
     }
+  });
+
+  await t('postinstall：优先用随包内核，没有才回落联网下载', async () => {
+    const crypto = require('crypto');
+    const pi = require('../scripts/postinstall');
+    const root = path.join(TMP, 'npm-pkg');
+    fs.mkdirSync(path.join(root, 'assets'), { recursive: true });
+    const stubExe = path.join(root, 'assets', 'mihomo-metactl.exe');
+    fs.writeFileSync(stubExe, 'stub kernel');
+    const stubSha = crypto.createHash('sha256').update(fs.readFileSync(stubExe)).digest('hex');
+    fs.writeFileSync(path.join(root, 'assets', 'kernel.json'),
+      JSON.stringify({ tag: 'v-test', exeSha256: stubSha }));
+
+    const found = pi.bundledKernel(root);
+    assert.ok(found, '有 assets/ 时应找到随包内核');
+    assert.ok(found.exe.endsWith(path.join('assets', 'mihomo-metactl.exe')));
+    assert.ok(found.meta.endsWith(path.join('assets', 'kernel.json')));
+    assert.strictEqual(pi.bundledKernel(path.join(TMP, 'no-assets-here')), null,
+      '没有 assets/ 时应回落联网下载');
+
+    // 走通 postinstall 的落盘路径：随包内核 -> 运行态
+    const p = paths.createPaths(path.join(TMP, 'npm-runtime'));
+    paths.ensureDirs(p);
+    const ctx = { p, cfg: config.load(p), logger, migration: { instanceId: 'test' } };
+    const info = await kernel.installBundled(ctx, found.exe, found.meta);
+    assert.strictEqual(info.installedFrom, 'bundle');
+    assert.ok(fs.existsSync(p.mihomoExe));
+  });
+
+  await t('kernel status 显示内核来源', () => {
+    const p = paths.createPaths(path.join(TMP, 'kernel-status'));
+    paths.ensureDirs(p);
+    fs.writeFileSync(p.mihomoExe, 'stub');
+    fs.writeFileSync(p.kernelJson, JSON.stringify({
+      tag: 'v-test', arch: 'x64', installedFrom: 'bundle', exeSha256: 'a'.repeat(64),
+    }));
+    const d = require('../src/commands/kernel').describe({ p });
+    assert.strictEqual(d.installed, true);
+    assert.strictEqual(d.installedFrom, 'bundle');
+    assert.ok(d.exeSha256.endsWith('...'));
   });
 
   await t('uninstall 安装方式判定与卸载计划', () => {

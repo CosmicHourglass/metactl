@@ -27,6 +27,9 @@ function describe(ctx) {
     compatible: info ? !!info.compatible : null,
     sha256: info ? info.sha256 : null,
     digestVerified: info ? !!info.digestVerified : null,
+    // 内核来源：随安装包分发，还是联网从官方 release 下载
+    installedFrom: info ? (info.installedFrom || 'download') : null,
+    exeSha256: info && info.exeSha256 ? String(info.exeSha256).slice(0, 16) + '...' : null,
     downloadedAt: info ? info.downloadedAt : null,
     exeBytes: bytes,
   };

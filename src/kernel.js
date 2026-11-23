@@ -85,6 +85,15 @@ function sha256File(file) {
   });
 }
 
+// 内核 exe 自身的指纹。zip 的 sha256 只能证明「下载的包没被篡改」，
+// 这个能证明「落到磁盘上的 exe 就是那个 exe」—— 安装包自带内核时用它校验。
+async function exeFingerprint(p) {
+  const exeSha256 = await sha256File(p.mihomoExe);
+  let exeBytes = 0;
+  try { exeBytes = fs.statSync(p.mihomoExe).size; } catch (_) { /* ignore */ }
+  return { exeSha256, exeBytes };
+}
+
 // 从本地 zip 安装：慢速网络（下载反复超时）或完全离线时用。
 // 不删除用户提供的文件；有 --sha256 就校验，没有则如实标注未比对官方 digest。
 async function installFromFile(ctx, o, arch, compatible) {
@@ -119,7 +128,7 @@ async function installFromFile(ctx, o, arch, compatible) {
     throw wrap('E_KERNEL_UNPACK', '内核解压失败', '请确认这是 mihomo 官方 zip（内含 .exe）', e);
   }
 
-  const info = {
+  const info = Object.assign({
     tag: 'local',
     asset: path.basename(src),
     sha256: sha,
@@ -128,10 +137,50 @@ async function installFromFile(ctx, o, arch, compatible) {
     compatible: !!compatible,
     digestVerified: !!expected,
     downloadedAt: new Date().toISOString(),
-  };
+  }, await exeFingerprint(p));
   writeAtomic(p.kernelJson, JSON.stringify(info, null, 2) + '\n');
   logger.ok(`内核就位（本地包） -> ${path.basename(p.mihomoExe)}`);
   return Object.assign({}, info, { skipped: false });
+}
+
+// 安装包自带内核：直接从包内拷到运行态，全程不联网。
+// exeFile / metaFile 由调用方给出（npm 包内 assets/，或自包含包的 assets/）。
+// metaFile 里必须有 exeSha256 —— 这是「包里的 exe 确实是那个 exe」的凭据。
+async function installBundled(ctx, exeFile, metaFile) {
+  const { p, logger } = ctx;
+  if (!fs.existsSync(exeFile)) {
+    fail('E_KERNEL_PACKAGE_MISSING', `安装包内没有内核文件: ${exeFile}`,
+      '请重新安装；也可执行 metactl kernel install 联网下载官方内核');
+  }
+  const meta = readJson(metaFile, null);
+  if (!meta || !meta.exeSha256) {
+    fail('E_KERNEL_PACKAGE_MISSING', '安装包内的内核元信息缺失',
+      '请重新安装最新版本；也可执行 metactl kernel install 联网下载官方内核');
+  }
+  const sha = await sha256File(exeFile);
+  if (sha !== meta.exeSha256) {
+    fail('E_KERNEL_CHECKSUM', '安装包内的内核校验不通过',
+      '安装包可能已损坏或被修改过，请重新下载安装包');
+  }
+  fs.mkdirSync(p.binDir, { recursive: true });
+  try {
+    fs.copyFileSync(exeFile, p.mihomoExe);
+  } catch (e) {
+    throw wrap('E_KERNEL_UNPACK', '内核落盘失败',
+      '内核可能正在运行，请先执行 metactl stop 后重试', e);
+  }
+  // 0.2.x 留下的旧内核文件清掉：不再被使用，却占着 60 MB
+  const legacy = path.join(p.binDir, 'mihomo.exe');
+  if (fs.existsSync(legacy)) {
+    try { fs.rmSync(legacy, { force: true }); } catch (_) { /* 清不掉也无妨 */ }
+  }
+  const info = Object.assign({}, meta, {
+    installedFrom: 'bundle',
+    installedAt: new Date().toISOString(),
+  });
+  writeAtomic(p.kernelJson, JSON.stringify(info, null, 2) + '\n');
+  logger.ok(`内核就位 ${info.tag || '内置'}（随安装包提供，无需联网）`);
+  return info;
 }
 
 async function install(ctx, opts) {
@@ -218,15 +267,15 @@ async function install(ctx, opts) {
     try { fs.rmSync(zipPath, { force: true }); } catch (_) { /* ignore */ }
   }
 
-  const info = {
+  const info = Object.assign({
     tag: asset.tag, asset: asset.name, sha256: result.sha256,
     size: result.bytes, arch, compatible: !!compatible,
     digestVerified: !!asset.digest,
     downloadedAt: new Date().toISOString(),
-  };
+  }, await exeFingerprint(p));
   writeAtomic(p.kernelJson, JSON.stringify(info, null, 2) + '\n');
   logger.ok(`内核就位 ${asset.tag} -> ${path.basename(p.mihomoExe)}`);
   return Object.assign({}, info, { skipped: false });
 }
 
-module.exports = { install, installFromFile, extractExe, safeEntryName, sha256File };
+module.exports = { install, installFromFile, installBundled, extractExe, safeEntryName, sha256File, exeFingerprint };

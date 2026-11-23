@@ -9,6 +9,7 @@
 // 两者都幂等，重复 npm install / npm ci 不会重复下载或重复追加 PATH。
 
 const fs = require('fs');
+const path = require('path');
 const paths = require('../src/paths');
 const config = require('../src/config');
 const logger = require('../src/logger');
@@ -70,6 +71,19 @@ function makeContext() {
   };
 }
 
+// 随包附带的内核：npm 包里的 assets/。
+// 有就用它（不联网），没有再回落到联网下载官方内核。
+// root 省略时取包根目录；传参是为了单测能指向临时目录。
+function bundledKernel(root) {
+  const base = root || paths.detectRoot();
+  const exe = path.join(base, 'assets', 'mihomo-metactl.exe');
+  const meta = path.join(base, 'assets', 'kernel.json');
+  try {
+    if (fs.statSync(exe).size > 0 && fs.existsSync(meta)) return { exe, meta };
+  } catch (_) { /* 没有随包内核 */ }
+  return null;
+}
+
 async function main() {
   if (process.platform !== 'win32') {
     say('非 Windows 平台，跳过安装后配置（本工具仅支持 Windows）');
@@ -99,8 +113,24 @@ async function main() {
     return;
   }
 
-  // 延迟到确实需要下载时才加载网络/内核模块
+  // 延迟到确实需要装内核时才加载网络/内核模块
   const kernel = require('../src/kernel');
+
+  // 优先用随包附带的内核：装完即用，不需要能连通 MetaCubeX 的 GitHub
+  const bundled = bundledKernel();
+  if (bundled) {
+    try {
+      say('正在安装随包附带的 mihomo 内核（无需联网）...');
+      const info = await kernel.installBundled(ctx, bundled.exe, bundled.meta);
+      say(`内核就位 ${info.tag}，下一步：metactl init --sub <订阅地址>`);
+      return;
+    } catch (err) {
+      const code = (err && err.code) || 'E_UNKNOWN';
+      warn(`随包内核安装失败 [${code}]: ${(err && err.message) || err}`);
+      warn('改用联网下载官方内核...');
+    }
+  }
+
   say('正在安装 mihomo 官方内核（约 22 MB）...');
   try {
     const info = await kernel.install(ctx, {
@@ -125,4 +155,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, kernelPresent, makeContext, envFlag, launcherDir, registerLauncher };
+module.exports = { main, kernelPresent, makeContext, envFlag, launcherDir, registerLauncher, bundledKernel };

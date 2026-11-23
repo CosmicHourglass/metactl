@@ -67,6 +67,9 @@ pnpm-debug.log*
 # ===== metactl 运行态（敏感：订阅 token / 控制器 secret / 内核 / 日志）=====
 /.runtime/
 
+# ===== 随包分发的 mihomo 内核（61 MB，由 npm run stage:kernel 生成）=====
+/assets/
+
 # ===== 通用日志与临时文件 =====
 *.log
 *.tmp

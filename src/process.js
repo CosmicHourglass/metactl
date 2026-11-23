@@ -111,7 +111,11 @@ function status(ctx) {
       instanceId: rec.instanceId || null,
     };
   }
-  if (!im.image || im.image.toLowerCase() !== PROCESS.imageName) {
+  // 映像名必须是本工具的内核。新版是 mihomo-metactl.exe，
+  // 0.2.x 升级上来时老的 mihomo.exe 仍在跑，也要认，否则会误判成 PID 复用。
+  const knownImages = [PROCESS.imageName].concat(PROCESS.legacyImageNames || [])
+    .map((n) => String(n).toLowerCase());
+  if (!im.image || knownImages.indexOf(String(im.image).toLowerCase()) < 0) {
     clearPid(p);
     return { running: false, reason: 'pid-reused', image: im.image };
   }

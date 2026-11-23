@@ -1,6 +1,7 @@
 'use strict';
 
-// 把 metactl 打成「自带 Node 运行时」的自包含包，目标机不需要安装 Node。
+// 把 metactl 打成「自带 Node 运行时 + 自带 mihomo 内核」的自包含包，
+// 目标机既不需要安装 Node，也不需要能连通 MetaCubeX 的 GitHub。
 //
 //   node scripts/build-bundle.js --node <node.exe 路径> [--out <目录>] [--no-zip]
 //
@@ -10,12 +11,17 @@
 //     bundle.json           <- 安装模式标记，运行时据此把数据目录移到用户目录
 //     bin/metactl.cmd       <- 启动器，指向同包的 node.exe
 //     bin/cli.js  src/  node_modules/  package.json  README.md
+//     assets/mihomo-metactl.exe  assets/kernel.json   <- 随包分发的 mihomo 内核
+//
+// 内核对外改名成 mihomo-metactl.exe，与官方 mihomo 的产物区分开；
+// assets/kernel.json 里的 exeSha256 供安装时校验。
 //
 // 压缩依赖系统自带的 bsdtar（Win10 1803+），不引入任何构建期 npm 依赖。
 
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const stageKernel = require('./stage-kernel');
 
 const ROOT = path.resolve(__dirname, '..');
 const pkg = require(path.join(ROOT, 'package.json'));
@@ -128,13 +134,22 @@ function main() {
     return top !== '.bin' && top !== '.package-lock.json' && top !== '.cache';
   });
 
-  // 3. 启动器与安装标记
+  // 3. mihomo 内核：随包分发，安装时不再联网下载
+  const staged = stageKernel.stage({ out: path.join(stage, 'assets') });
+
+  // 4. 启动器与安装标记
   fs.writeFileSync(path.join(stage, 'bin', 'metactl.cmd'), launcherCmd(), 'utf8');
   fs.writeFileSync(path.join(stage, 'bundle.json'), JSON.stringify({
     name: pkg.name,
     version,
     target,
     node: execFileSync(nodeExe, ['-v'], { encoding: 'utf8' }).trim(),
+    kernel: {
+      tag: staged.info.tag,
+      exeName: staged.info.exeName,
+      exeSha256: staged.info.exeSha256,
+      exeBytes: staged.info.exeBytes,
+    },
     builtAt: new Date().toISOString(),
   }, null, 2) + '\n', 'utf8');
 
@@ -143,7 +158,7 @@ function main() {
 
   if (!opts.zip) return;
 
-  // 4. 压缩：系统 bsdtar 支持按扩展名选格式
+  // 5. 压缩：系统 bsdtar 支持按扩展名选格式
   const zipPath = path.join(outDir, dirName + '.zip');
   if (fs.existsSync(zipPath)) rmInside(outDir, zipPath);
   const tar = systemExe('tar.exe');

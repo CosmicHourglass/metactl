@@ -302,11 +302,50 @@ $launcher = Join-Path $BinDir 'metactl.cmd'
 Write-Step "已安装 metactl $bareVersion 到 $CurrentDir"
 
 if (-not $SkipKernel) {
-    Write-Step '正在安装 mihomo 内核（约 22 MB，受限网络可能需要几分钟）...'
-    if ($Mirror) { $env:METACTL_MIRROR = $Mirror }
-    & $launcher kernel install
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning '内核安装未成功。稍后可在新终端执行：metactl kernel install'
+    # 内核随安装包分发：直接落盘，不联网。装不上才回落到官方 release。
+    $kernelExe = Join-Path $CurrentDir 'assets\mihomo-metactl.exe'
+    $kernelMeta = Join-Path $CurrentDir 'assets\kernel.json'
+    if (Test-Path -LiteralPath $kernelExe) {
+        Write-Step '正在安装随包附带的 mihomo 内核（无需联网）...'
+        $runtimeBin = Join-Path $DataDir 'bin'
+        New-Item -ItemType Directory -Force -Path $runtimeBin | Out-Null
+        $runtimeExe = Join-Path $runtimeBin 'mihomo-metactl.exe'
+        Copy-Item -LiteralPath $kernelExe -Destination $runtimeExe -Force
+        # 校验：落盘的 exe 确实是包里的那个 exe
+        $expected = $null
+        try {
+            $kMeta = Get-Content -LiteralPath $kernelMeta -Raw -Encoding UTF8 | ConvertFrom-Json
+            $expected = $kMeta.exeSha256
+        } catch { }
+        if ($expected) {
+            # 用 .NET 直接算，不依赖 Get-FileHash：
+            # 部分 Windows 的 PowerShell 5.1 环境里 Microsoft.PowerShell.Utility
+            # 模块导出不完整，Get-FileHash 会「无法将...识别为 cmdlet」。
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $actual = ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($runtimeExe)))).Replace('-', '').ToLower()
+            } finally {
+                $sha.Dispose()
+            }
+            if ($actual -ne $expected.ToLower()) {
+                Remove-Item -LiteralPath $runtimeExe -Force -ErrorAction SilentlyContinue
+                throw "安装包内的内核校验不通过，安装包可能已损坏。请重新下载安装包。"
+            }
+            Write-Step '内核校验通过'
+        }
+        Copy-Item -LiteralPath $kernelMeta -Destination (Join-Path $runtimeBin 'kernel.json') -Force
+        # 0.2.x 留下的旧内核文件清掉：不再被使用，却占着 60 MB
+        $legacyExe = Join-Path $runtimeBin 'mihomo.exe'
+        if (Test-Path -LiteralPath $legacyExe) {
+            Remove-Item -LiteralPath $legacyExe -Force -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Step '安装包内没有内核，正在联网下载 mihomo 官方内核（约 22 MB）...'
+        if ($Mirror) { $env:METACTL_MIRROR = $Mirror }
+        & $launcher kernel install
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning '内核安装未成功。稍后可在新终端执行：metactl kernel install'
+        }
     }
 } else {
     Write-Step '按 -SkipKernel 跳过内核。稍后执行：metactl kernel install'
