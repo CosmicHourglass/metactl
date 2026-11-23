@@ -315,9 +315,9 @@ async function main() {
     const program = require('../src/cli').build();
     assert.ok(program.commands.map((c) => c.name()).includes('uninstall'), '缺少 uninstall 命令');
     const uninstallOpts = program.commands.find((c) => c.name() === 'uninstall').options.map((o) => o.long);
-    for (const o of ['--purge', '--yes', '--keep-program']) {
-      assert.ok(uninstallOpts.includes(o), 'uninstall 缺少选项 ' + o);
-    }
+    assert.deepStrictEqual(uninstallOpts.filter((o) => o !== '--home' && o !== '--json'
+      && o !== '--quiet' && o !== '--verbose' && o !== '--help'), ['--purge'],
+    'uninstall 只应保留 --purge 一个选项');
 
     // 自包含安装：程序根下有 bundle.json
     const bundleRoot = path.join(TMP, 'install', 'current');
@@ -338,15 +338,13 @@ async function main() {
     assert.strictEqual(p.mode, 'bundle');
     assert.strictEqual(p.removePathEntry, true, '自包含安装应移除 PATH 条目');
     assert.strictEqual(p.removeProgram, true);
-    assert.strictEqual(p.purgeData, false);
+    assert.strictEqual(p.restoreProxy, true, '卸载前应恢复代理备份原值');
+    assert.strictEqual(p.removeKernel, true, '内核默认不保留');
+    assert.strictEqual(p.purgeData, false, '默认保留订阅快照与配置');
     assert.strictEqual(p.launcherDir, path.join(bundleRoot, 'bin'));
 
-    p = u.plan(bundleCtx, { keepProgram: true });
-    assert.strictEqual(p.removeProgram, false);
-    assert.strictEqual(p.removePathEntry, false, '保留程序时不该动 PATH');
-
     p = u.plan(bundleCtx, { purge: true });
-    assert.strictEqual(p.purgeData, true);
+    assert.strictEqual(p.purgeData, true, '--purge 才删订阅快照与配置');
 
     // npm 全局安装：命令目录是共享的，不动 PATH
     const npmCtx = mkCtx(npmRoot, path.join(TMP, 'npm-data'));
@@ -398,8 +396,8 @@ async function main() {
 
     const out = {
       ok: true, mode: 'bundle', runtimeDir: target,
-      proxy: { changed: true, reason: 'stale-proxy', mode: 'restored' },
-      kernelStopped: true,
+      proxy: { changed: true, restored: true, reason: 'restored', mode: 'restored' },
+      kernelRemoved: true,
       pathEntry: { removed: true },
       program: { removed: true },
       dataPurged: true, notes: [],
@@ -407,14 +405,17 @@ async function main() {
     const text = u.summary(out).join('\n');
     assert.ok(text.includes('卸载完成'), text);
     assert.ok(text.includes('已删除'), text);
+    assert.ok(text.includes('恢复到开启前的原值'), text);
     const foreign = u.summary(Object.assign({}, out, {
-      proxy: { changed: false, reason: 'foreign-proxy' },
+      proxy: { changed: false, restored: false, reason: 'foreign-proxy' },
       pathEntry: { removed: false },
       program: { removed: false, reason: 'source-mode' },
+      dataPurged: false,
       notes: ['提示信息'],
     })).join('\n');
     assert.ok(foreign.includes('未改动'), foreign);
     assert.ok(foreign.includes('源码目录未删除'), foreign);
+    assert.ok(foreign.includes('订阅快照与配置: 保留在'), foreign);
   });
 
   await t('uninstall 程序目录：改名让位并由后台进程删除', async () => {
@@ -436,25 +437,61 @@ async function main() {
     assert.strictEqual(fs.existsSync(r.target), false, '后台进程应把残留目录删掉');
   });
 
-  await t('uninstall 确认守卫：非交互环境必须显式 --yes', async () => {
-    const cmd = require('../src/commands/uninstall');
-    const home = path.join(TMP, 'confirm-home');
-    const p = paths.createPaths(home);
-    paths.ensureDirs(p);
-    const ctx = {
-      programRoot: path.join(TMP, 'project'),
-      root: home, p, cfg: config.load(p), logger, migration: { instanceId: 'test' },
-    };
-    // 测试环境 stdin 不是终端：不给 --yes 就必须拒绝，不做任何事
-    await assert.rejects(
-      () => cmd.run(ctx, [], {}),
-      (e) => e && e.code === 'E_UNINSTALL_CONFIRM'
-    );
-    const plan = require('../src/uninstall').plan(ctx, { purge: true });
-    const lines = cmd.planLines(plan).join('\n');
-    assert.ok(lines.includes('即将卸载 metactl'), lines);
-    assert.ok(lines.includes('连数据一起删除'), lines);
-    assert.ok(lines.includes('删除程序目录'), lines);
+  await t('uninstall 默认删内核、保留订阅快照与配置', async () => {
+    const store = {};
+    await withRegistry(store, async () => {
+      const u = require('../src/uninstall');
+      const home = path.join(TMP, 'keep-data-home');
+      const p = paths.createPaths(home);
+      paths.ensureDirs(p);
+      fs.writeFileSync(p.mihomoExe, 'stub kernel');
+      fs.writeFileSync(p.profileYaml, 'proxies: []');
+      fs.writeFileSync(p.configYaml, 'mixed-port: 17890');
+      const ctx = {
+        programRoot: path.join(TMP, 'project'),
+        root: home, p, cfg: config.load(p), logger, migration: { instanceId: 'test' },
+      };
+      const out = await u.run(ctx, {});
+      assert.strictEqual(out.mode, 'source');
+      assert.strictEqual(out.kernelRemoved, true, '内核默认应被删除');
+      assert.strictEqual(fs.existsSync(p.mihomoExe), false, '内核 exe 应被删除');
+      assert.strictEqual(out.dataPurged, false, '默认不删订阅快照与配置');
+      assert.strictEqual(fs.existsSync(p.profileYaml), true, '订阅快照应保留');
+      assert.strictEqual(fs.existsSync(p.configYaml), true, '配置应保留');
+    }, ['../src/uninstall']);
+  });
+
+  await t('uninstall 内核在运行则拒绝并提示先关闭', async () => {
+    const store = {};
+    await withRegistry(store, async () => {
+      // 伪造「内核正在运行」：真实 tasklist 会认出那不是 mihomo.exe
+      const procPath = require.resolve('../src/process');
+      const realProc = require('../src/process');
+      require.cache[procPath] = {
+        id: procPath, filename: procPath, loaded: true,
+        exports: Object.assign({}, realProc, {
+          status: () => ({ running: true, pid: 4242 }),
+        }),
+      };
+      const u = require('../src/uninstall');
+      const home = path.join(TMP, 'running-home');
+      const p = paths.createPaths(home);
+      paths.ensureDirs(p);
+      fs.writeFileSync(p.mihomoExe, 'stub kernel');
+      const ctx = {
+        programRoot: path.join(TMP, 'project'),
+        root: home, p, cfg: config.load(p), logger, migration: { instanceId: 'test' },
+      };
+      try {
+        await assert.rejects(
+          () => u.run(ctx, {}),
+          (e) => e && e.code === 'E_KERNEL_RUNNING' && /metactl stop/.test(e.hint || '')
+        );
+        assert.strictEqual(fs.existsSync(p.mihomoExe), true, '拒绝卸载时不该动内核文件');
+      } finally {
+        delete require.cache[procPath];
+      }
+    }, ['../src/uninstall']);
   });
 
   await t('uninstall 清数据后不留残留（写日志不得重建目录）', async () => {

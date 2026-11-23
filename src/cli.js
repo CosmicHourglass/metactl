@@ -35,7 +35,7 @@ const DESCRIPTIONS = {
   stop: '停止内核（不自动关闭系统代理）',
   restart: '重启内核（系统代理设置保持不变）',
   status: '查看内核、进程、控制器与系统代理状态',
-  uninstall: '卸载 metactl：恢复系统代理、停内核、移除 PATH 并删除程序目录',
+  uninstall: '卸载 metactl：恢复系统代理、删内核、移除 PATH 并删除程序目录',
 };
 
 // 全局选项同时挂在 program 与每个子命令上：
@@ -117,9 +117,7 @@ function build() {
 
   addGlobals(program.command('uninstall')
     .description(DESCRIPTIONS.uninstall)
-    .option('--purge', '连运行态数据（订阅快照、配置、内核、日志）一起删除')
-    .option('--yes', '跳过交互确认（脚本 / 无人值守场景）')
-    .option('--keep-program', '只恢复代理与清理内核，不删除程序本体')
+    .option('--purge', '连订阅快照与配置一起删除（默认保留）')
     .action(makeHandler(program, 'uninstall')));
 
   return program;

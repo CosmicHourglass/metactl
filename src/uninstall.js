@@ -7,8 +7,9 @@
 //   npm-global npm i -g 装的：程序在 <prefix>\node_modules\metactl，删除交给 npm 自己
 //   source     项目目录里跑源码：只清运行态与代理，绝不删用户自己的源码目录
 //
-// 顺序有讲究：先恢复系统代理（否则卸载到一半用户还断网），再停内核，
-// 然后摘 PATH、删程序，最后才按需清数据。
+// 默认行为：恢复系统代理原值 -> 删内核 -> 摘 PATH -> 删程序，
+// 订阅快照与配置保留（重装后可直接用，不用重新拉订阅）。
+// --purge 才会把订阅快照与配置一起删掉。
 
 const fs = require('fs');
 const os = require('os');
@@ -20,6 +21,7 @@ const paths = require('./paths');
 const proc = require('./process');
 const proxy = require('./proxy');
 const userpath = require('./userpath');
+const { fail } = require('./errors');
 const { resolveExe } = require('./system');
 
 const MODES = ['bundle', 'npm-global', 'source'];
@@ -45,25 +47,29 @@ function describe(ctx) {
     // 自包含安装的启动器在 current\bin，install.ps1 加进用户 PATH 的就是这个目录
     launcherDir: mode === 'bundle' ? path.join(programRoot, 'bin') : null,
     runtimeDir: ctx.p.runtime,
+    kernelDir: ctx.p.binDir,
     dataRoot: ctx.root,
   };
 }
 
-// 卸载要做什么：先算清楚再动手，确认提示与实际执行共用同一份计划。
+// 卸载要做什么：先算清楚再动手。
 function plan(ctx, opts) {
   const o = opts || {};
   const d = describe(ctx);
-  const keepProgram = !!o.keepProgram;
   return {
     mode: d.mode,
     programRoot: d.programRoot,
     launcherDir: d.launcherDir,
     runtimeDir: d.runtimeDir,
+    kernelDir: d.kernelDir,
+    // 卸载前必须把系统代理恢复到开启前的原值
     restoreProxy: true,
-    stopKernel: true,
+    // 内核不保留：重装时执行 metactl kernel install 即可
+    removeKernel: true,
     // npm 全局目录是共享的，删掉会影响别的全局包，所以不动 PATH
-    removePathEntry: d.mode === 'bundle' && !keepProgram,
-    removeProgram: !keepProgram,
+    removePathEntry: d.mode === 'bundle',
+    removeProgram: true,
+    // 默认保留订阅快照与配置；--purge 才连它们一起删
     purgeData: !!o.purge,
   };
 }
@@ -131,6 +137,22 @@ function purgeRuntime(dir) {
   }
 }
 
+// 卸载前把系统代理恢复到开启前的原值。
+// 有本实例的备份就精确恢复；没有备份（或备份来自别的机器）就退回幂等清理，
+// 只清掉 metactl 自己写进去的值，绝不碰用户自己的代理配置。
+function restoreProxyBackup(ctx) {
+  try {
+    proxy.off(ctx, false);
+    return { changed: true, restored: true, reason: 'restored', mode: 'restored' };
+  } catch (_) {
+    const r = proxy.repair(ctx, false);
+    return {
+      changed: !!r.changed, restored: false,
+      reason: r.reason || null, mode: r.mode || null,
+    };
+  }
+}
+
 async function run(ctx, opts) {
   const o = opts || {};
   const { logger } = ctx;
@@ -141,43 +163,50 @@ async function run(ctx, opts) {
     mode: p.mode,
     programRoot: p.programRoot,
     runtimeDir: p.runtimeDir,
-    proxy: { changed: false, reason: null, mode: null },
-    kernelStopped: false,
+    proxy: { changed: false, restored: false, reason: null, mode: null },
+    kernelRemoved: false,
     pathEntry: null,
     program: null,
     dataPurged: false,
     notes: [],
   };
 
-  // 1. 先恢复系统代理：内核还在跑时恢复，卸载过程中也不会出现「代理指向死端口」的窗口
+  // 1. 内核在跑就先拦下来：让用户自己停，免得卸载到一半把正在跑的流量打断
+  const st = proc.status(ctx);
+  if (st.running) {
+    fail('E_KERNEL_RUNNING', `内核正在运行 (PID ${st.pid})，无法卸载`,
+      '请先执行 metactl stop 关闭内核，再执行 metactl uninstall');
+  }
+
+  // 2. 卸载前把系统代理恢复到开启前的原值
   if (p.restoreProxy) {
-    const r = proxy.repair(ctx, false);
-    out.proxy = { changed: !!r.changed, reason: r.reason || null, mode: r.mode || null };
-    if (r.reason === 'already-off') {
+    const r = restoreProxyBackup(ctx);
+    out.proxy = r;
+    if (r.restored) {
+      logger.ok('系统代理已关闭并恢复到开启前的设置');
+    } else if (r.reason === 'already-off') {
       logger.info('系统代理本来就是关闭状态');
     } else if (r.reason === 'foreign-proxy') {
       logger.warn('当前系统代理不是 metactl 设置的，未作改动（避免破坏你自己的代理配置）');
       out.notes.push('你自己的系统代理设置被保留，如需关闭请自行在系统设置里处理');
     } else {
-      logger.ok(r.mode === 'restored'
-        ? '系统代理已关闭并恢复到开启前的设置'
-        : '系统代理已关闭，metactl 写入的代理值已清除');
+      logger.ok('系统代理已关闭，metactl 写入的代理值已清除');
     }
   }
 
-  // 2. 停内核
-  if (p.stopKernel) {
-    const st = proc.status(ctx);
-    if (st.running) {
-      await proc.stop(ctx);
-      out.kernelStopped = true;
-      logger.ok(`内核已停止 (PID ${st.pid})`);
-    } else {
-      logger.info('内核本来就没有在运行');
+  // 3. 删内核：默认不保留，重装后 metactl kernel install 即可
+  if (p.removeKernel) {
+    const r = purgeRuntime(p.kernelDir);
+    out.kernelRemoved = r.ok;
+    out.kernelError = r.error;
+    if (r.ok) logger.ok('内核已删除（重装后执行 metactl kernel install 即可恢复）');
+    else {
+      logger.warn(`内核删除失败（${r.error}）：${p.kernelDir}`);
+      out.notes.push('内核未能删除，请手动清理：' + p.kernelDir);
     }
   }
 
-  // 3. 摘掉用户 PATH 里的命令目录
+  // 4. 摘掉用户 PATH 里的命令目录
   if (p.removePathEntry && p.launcherDir) {
     try {
       const r = userpath.remove(p.launcherDir);
@@ -196,11 +225,8 @@ async function run(ctx, opts) {
     out.pathEntry = { removed: false, reason: 'not-applicable', dir: p.launcherDir, error: null };
   }
 
-  // 4. 删除程序本体
-  if (!p.removeProgram) {
-    out.program = { removed: false, reason: 'kept' };
-    logger.info('按 --keep-program 保留程序本体');
-  } else if (p.mode === 'bundle') {
+  // 5. 删除程序本体
+  if (p.mode === 'bundle') {
     const r = removeProgramDir(p.programRoot);
     out.program = {
       removed: true, reason: 'removed', renamed: r.renamed,
@@ -227,7 +253,7 @@ async function run(ctx, opts) {
     out.notes.push('源码目录不会被删除，如需彻底清理请手动删除 .runtime 目录');
   }
 
-  // 5. 清数据放最后：日志目录被删后再写日志会把它重建出来，
+  // 6. 清数据放最后：日志目录被删后再写日志会把它重建出来，
   //    所以这里只用 logger 报错，成功提示交给命令层的汇总输出（直接写 stdout）。
   if (p.purgeData) {
     const r = purgeRuntime(p.runtimeDir);
@@ -239,24 +265,24 @@ async function run(ctx, opts) {
     }
   } else {
     out.dataPurged = false;
-    logger.info(`运行态数据保留在 ${p.runtimeDir}`);
+    logger.info(`订阅快照与配置保留在 ${p.runtimeDir}`);
   }
 
-  out.ok = !out.dataError && !(out.program && out.program.reason === 'failed');
+  out.ok = !out.dataError && !out.kernelError && !(out.program && out.program.reason === 'failed');
   return out;
 }
 
 function proxyText(p) {
   if (!p) return '未处理';
+  if (p.restored) return '已关闭并恢复到开启前的原值';
   if (p.reason === 'already-off') return '本来就是关闭状态';
   if (p.reason === 'foreign-proxy') return '不是 metactl 设置的，未改动';
-  if (p.changed) return p.mode === 'restored' ? '已关闭并精确恢复原值' : '已关闭并清除 metactl 写入的值';
+  if (p.changed) return '已关闭并清除 metactl 写入的值';
   return '未改动';
 }
 
 function programText(p) {
   if (!p) return '未处理';
-  if (p.reason === 'kept') return '按 --keep-program 保留';
   if (p.reason === 'source-mode') return '源码目录未删除';
   if (p.removed) return '已删除';
   return '删除失败：' + (p.error || '未知原因');
@@ -269,18 +295,20 @@ function summary(out) {
   lines.push(out.ok ? '卸载完成。' : '卸载完成，但有步骤未成功（见下方提示）。');
   lines.push(`  安装方式: ${MODE_TEXT[out.mode] || out.mode}`);
   lines.push(`  系统代理: ${proxyText(out.proxy)}`);
-  lines.push(`  内核: ${out.kernelStopped ? '已停止' : '本就未运行'}`);
+  lines.push(`  内核: ${out.kernelRemoved ? '已删除' : '未删除'}`);
   if (out.pathEntry) {
     lines.push(`  用户 PATH: ${out.pathEntry.removed ? '已移除命令目录' : '未改动'}`);
   }
   lines.push(`  程序: ${programText(out.program)}`);
-  lines.push(`  运行态数据: ${out.dataPurged ? '已删除' : '保留在 ' + out.runtimeDir}`);
+  lines.push(out.dataPurged
+    ? '  订阅快照与配置: 已删除'
+    : `  订阅快照与配置: 保留在 ${out.runtimeDir}`);
   for (const n of out.notes || []) lines.push('  提示: ' + n);
   return lines;
 }
 
 module.exports = {
   MODES, MODE_TEXT, detectMode, describe, plan,
-  scheduleRemove, removeProgramDir, removeNpmPackage, purgeRuntime,
+  scheduleRemove, removeProgramDir, removeNpmPackage, purgeRuntime, restoreProxyBackup,
   run, summary, proxyText, programText,
 };

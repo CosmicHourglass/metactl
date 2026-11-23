@@ -56,7 +56,7 @@ metactl stop
 | `kernel install` / `kernel update` | 补装 / 升级内核 |
 | `test` | 自检运行态（内核、配置、端口、控制器） |
 | `version` | 显示工具与运行环境信息 |
-| `uninstall` | 卸载：恢复系统代理、停内核、移除 PATH 并删除程序目录（`--purge` 连数据一起删、`--yes` 免确认） |
+| `uninstall` | 卸载：恢复系统代理原值、删内核、移除 PATH 并删除程序目录（`--purge` 连订阅与配置一起删） |
 
 全局选项：`--json`（机器可读输出）、`--quiet`、`-v, --verbose`、`--home <目录>`（改运行态位置）、`-h, --help`。
 
@@ -79,20 +79,24 @@ Node、curl、git 默认**不读** Windows 系统代理，验证请用浏览器�
 
 ## 卸载
 
-直接敲命令即可，会先恢复系统代理、再停内核，然后摘掉 PATH 条目并删除程序目录：
+直接敲命令即可，不交互确认：
 
 ```bat
-metactl uninstall                  # 保留运行态数据（订阅快照、配置、内核）
-metactl uninstall --purge          # 连运行态数据一起删
-metactl uninstall --yes            # 跳过交互确认（脚本 / 无人值守）
-metactl uninstall --keep-program   # 只恢复代理与停内核，不删程序
+metactl uninstall                  # 保留订阅快照与配置，删除内核
+metactl uninstall --purge          # 连订阅快照与配置一起删除
 ```
 
-默认会先打印卸载计划并要求确认，非交互环境（脚本、管道）必须显式加 `--yes`。
+卸载做这几件事：
+
+1. **内核在运行就拒绝**，提示先执行 `metactl stop` —— 不打断正在跑的流量。
+2. **把系统代理恢复到开启前的原值**（没有备份时只清掉 metactl 自己写进去的值，不动你自己的代理配置）。
+3. **删除内核**（`mihomo.exe`）。内核不保留，重装后执行 `metactl kernel install` 即可。
+4. **删除程序本体**并从用户 PATH 移除命令目录。
+5. 订阅快照与配置默认保留，重装后不用重新拉订阅；加 `--purge` 才连它们一起删。
 
 按安装方式分别处理：
 
-- **自包含安装**：程序目录里的 `node.exe` 正是当前进程在跑的 exe，直接删不掉 —— 先把 `current` 改名让位，再由后台进程在命令退出后删除；同时从用户 PATH 移除命令目录。
+- **自包含安装**：程序目录里的 `node.exe` 正是当前进程在跑的 exe，直接删不掉 —— 先把 `current` 改名让位，再由后台进程在命令退出后删除。
 - **npm 全局安装**：调用 `npm uninstall -g metactl`（npm 全局目录是共用的，PATH 保持不动）。
 - **项目目录内运行**：只清理运行态与代理，不会删你的源码目录。
 
