@@ -20,7 +20,7 @@ const paths = require('./paths');
 const proc = require('./process');
 const proxy = require('./proxy');
 const userpath = require('./userpath');
-const { encodedCommand, resolveExe } = require('./system');
+const { resolveExe } = require('./system');
 
 const MODES = ['bundle', 'npm-global', 'source'];
 
@@ -69,23 +69,24 @@ function plan(ctx, opts) {
 }
 
 // 后台清理：程序目录里的 node.exe 正是当前进程在跑的 exe，直接删不掉。
-// 改由一个脱离父进程的 PowerShell 稍后重试删除，父进程退出后文件锁自然释放。
+// 交给一个脱离父进程的 cmd 稍后重试删除，父进程退出后文件锁自然释放。
+//
+// 两个细节：
+// - 目标路径走环境变量，不写进命令行：中文与空格路径都不会被 cmd 解析坏
+// - windowsVerbatimArguments：命令行原样交给 cmd，避免 Node 给参数加引号后
+//   cmd /c 的引号剥离规则把路径切碎
 function scheduleRemove(dir) {
-  const target = String(dir).replace(/'/g, "''");
-  const script = [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    "$p = '" + target + "'",
-    'for ($i = 0; $i -lt 60; $i++) {',
-    '  Start-Sleep -Milliseconds 500',
-    '  if (-not (Test-Path -LiteralPath $p)) { exit 0 }',
-    '  try { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop } catch { }',
-    '}',
-  ].join('\n');
+  const target = String(dir);
+  const cmdLine = 'for /l %i in (1,1,10) do @(if exist "%METACTL_RM_TARGET%" '
+    + '(ping 127.0.0.1 -n 2 >nul & rmdir /s /q "%METACTL_RM_TARGET%" >nul 2>&1))';
   try {
-    const child = spawn(resolveExe('powershell.exe'), [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-EncodedCommand', encodedCommand(script),
-    ], { detached: true, windowsHide: true, stdio: 'ignore', cwd: os.tmpdir() });
+    const env = Object.assign({}, process.env, { METACTL_RM_TARGET: target });
+    const child = spawn(resolveExe('cmd.exe'), ['/d', '/c', cmdLine], {
+      detached: true, windowsHide: true, stdio: 'ignore', cwd: os.tmpdir(), env,
+      windowsVerbatimArguments: true,
+    });
+    // 删不掉不算失败：目录已改名让位，残留由用户手动清理即可
+    child.on('error', () => { /* ignore */ });
     child.unref();
     return true;
   } catch (_) {
@@ -226,13 +227,16 @@ async function run(ctx, opts) {
     out.notes.push('源码目录不会被删除，如需彻底清理请手动删除 .runtime 目录');
   }
 
-  // 5. 清数据放最后：日志目录被删后再写日志会把它重建出来
+  // 5. 清数据放最后：日志目录被删后再写日志会把它重建出来，
+  //    所以这里只用 logger 报错，成功提示交给命令层的汇总输出（直接写 stdout）。
   if (p.purgeData) {
     const r = purgeRuntime(p.runtimeDir);
     out.dataPurged = r.ok;
     out.dataError = r.error;
-    if (r.ok) logger.ok(`运行态数据已删除：${p.runtimeDir}`);
-    else logger.warn(`运行态数据删除失败（${r.error}）：${p.runtimeDir}`);
+    if (!r.ok) {
+      logger.warn(`运行态数据删除失败（${r.error}）：${p.runtimeDir}`);
+      out.notes.push('运行态数据未能完全删除，请手动清理：' + p.runtimeDir);
+    }
   } else {
     out.dataPurged = false;
     logger.info(`运行态数据保留在 ${p.runtimeDir}`);

@@ -417,6 +417,71 @@ async function main() {
     assert.ok(foreign.includes('源码目录未删除'), foreign);
   });
 
+  await t('uninstall 程序目录：改名让位并由后台进程删除', async () => {
+    const u = require('../src/uninstall');
+    const dir = path.join(TMP, 'program-dir');
+    fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'bin', 'app.exe'), 'stub');
+    const r = u.removeProgramDir(dir);
+    assert.strictEqual(r.removed, true);
+    assert.strictEqual(r.renamed, true, '应先改名让位，而不是原地删除');
+    assert.strictEqual(fs.existsSync(dir), false, '原目录应已消失');
+    assert.ok(r.target.includes('.uninstalled-'), r.target);
+    assert.strictEqual(r.scheduled, true, '应启动后台清理');
+    // 后台进程在父进程退出后把改名的目录删掉
+    const deadline = Date.now() + 20000;
+    while (Date.now() < deadline && fs.existsSync(r.target)) {
+      await new Promise((res) => setTimeout(res, 300));
+    }
+    assert.strictEqual(fs.existsSync(r.target), false, '后台进程应把残留目录删掉');
+  });
+
+  await t('uninstall 确认守卫：非交互环境必须显式 --yes', async () => {
+    const cmd = require('../src/commands/uninstall');
+    const home = path.join(TMP, 'confirm-home');
+    const p = paths.createPaths(home);
+    paths.ensureDirs(p);
+    const ctx = {
+      programRoot: path.join(TMP, 'project'),
+      root: home, p, cfg: config.load(p), logger, migration: { instanceId: 'test' },
+    };
+    // 测试环境 stdin 不是终端：不给 --yes 就必须拒绝，不做任何事
+    await assert.rejects(
+      () => cmd.run(ctx, [], {}),
+      (e) => e && e.code === 'E_UNINSTALL_CONFIRM'
+    );
+    const plan = require('../src/uninstall').plan(ctx, { purge: true });
+    const lines = cmd.planLines(plan).join('\n');
+    assert.ok(lines.includes('即将卸载 metactl'), lines);
+    assert.ok(lines.includes('连数据一起删除'), lines);
+    assert.ok(lines.includes('删除程序目录'), lines);
+  });
+
+  await t('uninstall 清数据后不留残留（写日志不得重建目录）', async () => {
+    const store = {};
+    await withRegistry(store, async () => {
+      const u = require('../src/uninstall');
+      const home = path.join(TMP, 'purge-home');
+      const p = paths.createPaths(home);
+      paths.ensureDirs(p);
+      fs.writeFileSync(p.logCli, 'old log\n');
+      const ctx = {
+        programRoot: path.join(TMP, 'project'),
+        root: home,
+        p,
+        cfg: config.load(p),
+        logger,
+        migration: { instanceId: 'test' },
+      };
+      const out = await u.run(ctx, { purge: true });
+      assert.strictEqual(out.mode, 'source');
+      assert.strictEqual(out.dataPurged, true);
+      assert.strictEqual(out.program.reason, 'source-mode', '源码目录不该被删除');
+      assert.strictEqual(fs.existsSync(p.runtime), false,
+        '运行态目录应被彻底删除：清理后再写日志会把它重建出来');
+    }, ['../src/uninstall']);
+  });
+
   await t('postinstall 钩子与幂等判定', () => {
     const pkg = require('../package.json');
     assert.strictEqual(pkg.scripts.postinstall, 'node scripts/postinstall.js');

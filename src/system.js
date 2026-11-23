@@ -11,15 +11,17 @@ function systemRoot() {
 }
 
 function resolveExe(name) {
-  // 优先让 PATH 解析；失败再拼 System32 绝对路径（含 32 位 Node 的 Sysnative 视图）。
-  const candidates = [name];
+  // 优先用 System32 绝对路径：受限终端的 PATH 未必带 System32，
+  // 只靠 PATH 解析会栽在「命令明明装了却找不到」上。
+  const candidates = [];
   const root = systemRoot();
   if (root) {
-    candidates.push(path.join(root, 'System32', name));
     if (process.arch === 'ia32') candidates.push(path.join(root, 'Sysnative', name));
+    candidates.push(path.join(root, 'System32', name));
   }
+  candidates.push(name); // 最后交给 PATH
   for (const c of candidates) {
-    if (c === name) return c; // 交给 PATH
+    if (c === name) return c;
     try { if (fs.existsSync(c)) return c; } catch (_) { /* ignore */ }
   }
   return name;
