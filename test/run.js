@@ -95,9 +95,9 @@ async function main() {
     for (const m of [
       'constants', 'errors', 'paths', 'config', 'logger', 'system', 'instance',
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
-      'process', 'proxy', 'geodata', 'userpath', 'cli',
+      'process', 'proxy', 'geodata', 'userpath', 'uninstall', 'cli',
     ]) require('../src/' + m);
-    for (const c of ['init', 'kernel', 'fix', 'speed', 'route', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy']) {
+    for (const c of ['init', 'kernel', 'fix', 'speed', 'route', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy', 'uninstall']) {
       require('../src/commands/' + c);
     }
   });
@@ -308,6 +308,113 @@ async function main() {
     for (const o of ['--force', '--arch', '--compatible', '--mirror']) {
       assert.ok(kernelOpts.includes(o), 'kernel 缺少选项 ' + o);
     }
+  });
+
+  await t('uninstall 安装方式判定与卸载计划', () => {
+    const u = require('../src/uninstall');
+    const program = require('../src/cli').build();
+    assert.ok(program.commands.map((c) => c.name()).includes('uninstall'), '缺少 uninstall 命令');
+    const uninstallOpts = program.commands.find((c) => c.name() === 'uninstall').options.map((o) => o.long);
+    for (const o of ['--purge', '--yes', '--keep-program']) {
+      assert.ok(uninstallOpts.includes(o), 'uninstall 缺少选项 ' + o);
+    }
+
+    // 自包含安装：程序根下有 bundle.json
+    const bundleRoot = path.join(TMP, 'install', 'current');
+    fs.mkdirSync(bundleRoot, { recursive: true });
+    fs.writeFileSync(path.join(bundleRoot, 'bundle.json'), JSON.stringify({ name: 'metactl' }));
+    assert.strictEqual(u.detectMode(bundleRoot), 'bundle');
+    // npm 全局安装：路径里有 node_modules
+    const npmRoot = path.join(TMP, 'npm-global', 'node_modules', 'metactl');
+    assert.strictEqual(u.detectMode(npmRoot), 'npm-global');
+    // 项目目录内运行
+    assert.strictEqual(u.detectMode(path.join(TMP, 'project')), 'source');
+
+    const mkCtx = (programRoot, root) => ({
+      programRoot, root, p: paths.createPaths(root),
+    });
+    const bundleCtx = mkCtx(bundleRoot, path.join(TMP, 'install'));
+    let p = u.plan(bundleCtx, {});
+    assert.strictEqual(p.mode, 'bundle');
+    assert.strictEqual(p.removePathEntry, true, '自包含安装应移除 PATH 条目');
+    assert.strictEqual(p.removeProgram, true);
+    assert.strictEqual(p.purgeData, false);
+    assert.strictEqual(p.launcherDir, path.join(bundleRoot, 'bin'));
+
+    p = u.plan(bundleCtx, { keepProgram: true });
+    assert.strictEqual(p.removeProgram, false);
+    assert.strictEqual(p.removePathEntry, false, '保留程序时不该动 PATH');
+
+    p = u.plan(bundleCtx, { purge: true });
+    assert.strictEqual(p.purgeData, true);
+
+    // npm 全局安装：命令目录是共享的，不动 PATH
+    const npmCtx = mkCtx(npmRoot, path.join(TMP, 'npm-data'));
+    p = u.plan(npmCtx, {});
+    assert.strictEqual(p.mode, 'npm-global');
+    assert.strictEqual(p.removePathEntry, false, 'npm 全局目录为共享目录，不应动 PATH');
+    assert.strictEqual(p.launcherDir, null);
+
+    // 源码目录运行：绝不删用户自己的代码
+    const srcCtx = mkCtx(path.join(TMP, 'project'), path.join(TMP, 'project'));
+    p = u.plan(srcCtx, {});
+    assert.strictEqual(p.mode, 'source');
+    assert.strictEqual(p.removePathEntry, false);
+  });
+
+  await t('uninstall PATH 条目移除：只删目标项 / 幂等', () => {
+    const dir = path.join(TMP, 'cmd 目录');
+    const store = {};
+    withRegistry(store, () => {
+      const up = require('../src/userpath');
+      store.Path = { type: 'REG_EXPAND_SZ', value: 'C:\\a;' + dir + ';C:\\b' };
+      const r = up.remove(dir);
+      assert.strictEqual(r.changed, true);
+      assert.strictEqual(r.reason, 'removed');
+      assert.strictEqual(store.Path.value, 'C:\\a;C:\\b', '只应删掉目标目录，其余原样保留');
+      // 幂等：再删一次什么都不做
+      const again = up.remove(dir);
+      assert.strictEqual(again.changed, false);
+      assert.strictEqual(again.reason, 'absent');
+      // 大小写与末尾斜杠视为同一项
+      store.Path = { type: 'REG_EXPAND_SZ', value: dir.toUpperCase() + '\\' };
+      const r2 = up.remove(dir);
+      assert.strictEqual(r2.changed, true);
+      assert.strictEqual(r2.reason, 'removed');
+    }, ['../src/userpath']);
+  });
+
+  await t('uninstall 汇总文案与数据清理', () => {
+    const u = require('../src/uninstall');
+    const target = path.join(TMP, 'purge-me');
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, 'a.txt'), 'x');
+    const r = u.purgeRuntime(target);
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(fs.existsSync(target), false, '数据目录应被删除');
+    const missing = u.purgeRuntime(path.join(TMP, 'never-existed'));
+    assert.strictEqual(missing.ok, true);
+    assert.strictEqual(missing.skipped, true);
+
+    const out = {
+      ok: true, mode: 'bundle', runtimeDir: target,
+      proxy: { changed: true, reason: 'stale-proxy', mode: 'restored' },
+      kernelStopped: true,
+      pathEntry: { removed: true },
+      program: { removed: true },
+      dataPurged: true, notes: [],
+    };
+    const text = u.summary(out).join('\n');
+    assert.ok(text.includes('卸载完成'), text);
+    assert.ok(text.includes('已删除'), text);
+    const foreign = u.summary(Object.assign({}, out, {
+      proxy: { changed: false, reason: 'foreign-proxy' },
+      pathEntry: { removed: false },
+      program: { removed: false, reason: 'source-mode' },
+      notes: ['提示信息'],
+    })).join('\n');
+    assert.ok(foreign.includes('未改动'), foreign);
+    assert.ok(foreign.includes('源码目录未删除'), foreign);
   });
 
   await t('postinstall 钩子与幂等判定', () => {

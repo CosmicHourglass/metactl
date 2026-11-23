@@ -56,6 +56,7 @@ metactl stop
 | `kernel install` / `kernel update` | 补装 / 升级内核 |
 | `test` | 自检运行态（内核、配置、端口、控制器） |
 | `version` | 显示工具与运行环境信息 |
+| `uninstall` | 卸载：恢复系统代理、停内核、移除 PATH 并删除程序目录（`--purge` 连数据一起删、`--yes` 免确认） |
 
 全局选项：`--json`（机器可读输出）、`--quiet`、`-v, --verbose`、`--home <目录>`（改运行态位置）、`-h, --help`。
 
@@ -78,12 +79,23 @@ Node、curl、git 默认**不读** Windows 系统代理，验证请用浏览器�
 
 ## 卸载
 
+直接敲命令即可，会先恢复系统代理、停掉内核，再摘掉 PATH 条目并删除程序目录：
+
+```bat
+metactl uninstall                  # 保留运行态数据（订阅快照、配置、内核）
+metactl uninstall --purge          # 连运行态数据一起删
+metactl uninstall --yes            # 跳过交互确认（脚本 / 无人值守）
+metactl uninstall --keep-program   # 只恢复代理与停内核，不删程序
+```
+
+按安装方式分别处理：自包含安装会删掉 `current` 目录并从用户 PATH 移除命令目录；npm 全局安装调用 `npm uninstall -g metactl`（npm 全局目录是共用的，PATH 保持不动）；项目目录内运行只清理运行态与代理，不会删你的源码。
+
+也可以用安装脚本卸载：
+
 ```powershell
 .\install.ps1 -Uninstall          # 保留配置与内核
 .\install.ps1 -Uninstall -Purge   # 连数据一起删
 ```
-
-npm 方式用 `npm uninstall -g metactl`；npm 全局目录是共用的，通常保留在 PATH 里即可，无需移除。
 
 ## 常见问题
 

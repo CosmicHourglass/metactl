@@ -90,6 +90,14 @@ function writeScript(value, type) {
   ].join('\n');
 }
 
+// 整个 PATH 值都不需要了：删掉值本身，避免留下一个空的 Path 项
+const DELETE_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "$k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)",
+  "if ($k) { $k.DeleteValue('Path', $false); $k.Close() }",
+  "Write-Output 'OK'",
+].join('\n');
+
 function dotnetQuery() {
   return parseDotnet(ps(QUERY_SCRIPT));
 }
@@ -128,6 +136,14 @@ function writeState(state, type, value) {
     if (w.code === 0) return;
   }
   ps(writeScript(value, type));
+}
+
+function deleteState(state) {
+  if (state.via !== 'dotnet') {
+    const w = runSync('reg.exe', ['delete', KEY, '/v', VALUE, '/f']);
+    if (w.code === 0) return;
+  }
+  ps(DELETE_SCRIPT);
 }
 
 function norm(s) {
@@ -199,8 +215,34 @@ function ensure(dir) {
   };
 }
 
+// 卸载时把命令目录从用户 PATH 里摘掉：只删这一条，其余原样保留。
+// 幂等：目录本来就不在 PATH 里时什么都不做。
+function remove(dir) {
+  const target = String(dir);
+  const before = readState();
+  if (!before.exists || !hasDir(before.value, target)) {
+    return { changed: false, reason: 'absent', dir: target, via: before.via, notified: false };
+  }
+
+  const kept = splitPath(before.value).filter((item) => norm(item) !== norm(target));
+  const next = kept.join(';');
+  const type = before.type === 'REG_SZ' ? 'REG_SZ' : 'REG_EXPAND_SZ';
+  if (next) writeState(before, type, next);
+  else deleteState(before);
+
+  let after;
+  try { after = readState(); }
+  catch (e) { after = dotnetQuery(); }
+  if (after.exists && hasDir(after.value, target)) {
+    fail('E_PATH_VERIFY', '从用户 PATH 移除命令目录后回读校验失败',
+      '请手动在「编辑账户的环境变量」中删除该条目');
+  }
+  const notified = notify();
+  return { changed: true, reason: 'removed', dir: target, type, notified, via: before.via };
+}
+
 module.exports = {
   KEY, VALUE, MAX_PATH_CHARS,
-  parseQuery, queryUserPath, parseDotnet, dotnetQuery, writeScript,
-  readState, writeState, norm, splitPath, hasDir, buildValue, notify, ensure,
+  parseQuery, queryUserPath, parseDotnet, dotnetQuery, writeScript, DELETE_SCRIPT,
+  readState, writeState, deleteState, norm, splitPath, hasDir, buildValue, notify, ensure, remove,
 };
