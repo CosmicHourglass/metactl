@@ -1,6 +1,6 @@
 # metactl
 
-Windows 上管理 [mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo) 内核的命令行工具。添加订阅、启停内核、开关系统代理、节点延迟测速。
+Windows 上管理 [mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo) 内核的命令行工具。添加订阅、启停内核、开关系统代理、切换线路、节点延迟测速，也能开一个本地网页操作端。
 
 ## 安装
 
@@ -28,30 +28,35 @@ npm i -g metactl
 
 ```bat
 metactl init --sub "https://example.com/sub/<token>/clash#MySub"
-metactl start
-metactl proxy on
+metactl connect
 ```
 
 用完 / 关机前：
 
 ```bat
-metactl proxy off
-metactl stop
+metactl disconnect
 ```
 
-忘了 `proxy off` 就关机，下次开机连不上网时执行 `metactl fix` 一键恢复。
+`connect` = 启动内核 + 开启系统代理，`disconnect` = 关闭系统代理 + 停止内核。
+想分步来也可以：`metactl start` / `metactl proxy on` / `metactl proxy off` / `metactl stop`。
+
+忘了 `disconnect` 就关机，下次开机连不上网时执行 `metactl fix` 一键恢复。
 
 ## 命令
 
 | 命令 | 说明 |
 | --- | --- |
 | `init --sub <地址>` | 添加订阅：拉取订阅、生成并校验配置（首次必填，之后可省略） |
+| `connect` | 一键连接：启动内核 + 开启系统代理（内核已在跑就直接复用） |
+| `disconnect` | 一键断开：关闭系统代理 + 停止内核（`--force` 代理无法精确恢复时仍强行关闭） |
 | `start` / `stop` / `restart` | 启停内核（不自动改系统代理） |
 | `status` | 查看内核、进程、控制器与代理状态 |
 | `proxy on` / `proxy off` | 开启系统代理并备份原值 / 精确恢复 |
 | `fix` | 断网自救：清除关机残留的代理，幂等可反复执行 |
+| `select` | 切换线路：列出策略组、查看候选节点、把某组切到指定节点 |
 | `speed` | 节点延迟测速排行（按节点测、默认超时 10000 ms、测试地址取订阅健康检查地址；`--limit 10`、`--group <名称>`、`--url <地址>`、`--timeout <ms>`、`--json`） |
 | `route` | 查看当前代理路线：系统代理指向、分流模式、策略组选中、活跃连接命中的规则与链路 |
+| `web` | 开启本地网页操作端：浏览器里看状态、切节点、连接与断开（`--port <端口>`、`--no-open`） |
 | `kernel status` | 查看内核版本与校验信息 |
 | `kernel install` / `kernel update` | 补装 / 升级内核（联网从 MetaCubeX 官方 release 获取） |
 | `test` | 自检运行态（内核、配置、端口、控制器） |
@@ -59,6 +64,31 @@ metactl stop
 | `uninstall` | 卸载：恢复系统代理原值、删内核、移除 PATH 并删除程序目录（`--purge` 连订阅与配置一起删） |
 
 全局选项：`--json`（机器可读输出）、`--quiet`、`-v, --verbose`、`--home <目录>`（改运行态位置）、`-h, --help`。
+
+## 切换线路
+
+```bat
+metactl select                          # 列出所有策略组与当前选中
+metactl select 节点选择                  # 列出该组的候选节点
+metactl select 节点选择 "香港 2"          # 切到指定节点
+```
+
+只有 `Selector` 类型的组能手动挑节点；「自动选择」这类 `URLTest` 组由内核按延迟自动选，对它执行切换会被拒绝。
+
+切换立即生效，但**只影响新建立的连接**，已有的连接仍走原来的节点。
+切换不落盘 —— 内核重启后回到订阅里的默认线路（select 组的第一个候选，通常就是「自动选择」）。
+
+## 网页操作端
+
+```bat
+metactl web
+```
+
+启动一个只监听本机回环地址的小服务，并自动打开浏览器：看内核与系统代理状态、一键连接 / 断开、切节点、启停内核。
+
+- 地址里带一次性令牌，所有接口都要带令牌才能调用，浏览器里的恶意页面调不动
+- 端口默认取配置文件里的 `webPort`，用 `--port <端口>` 临时换；`--no-open` 不自动开浏览器
+- 按 `Ctrl+C` 停止服务
 
 ## 系统代理
 

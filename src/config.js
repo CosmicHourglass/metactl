@@ -34,6 +34,8 @@ function validatePorts(cfg) {
   const ctlPort = parseInt(String(ports.externalController).split(':').pop(), 10);
   const dnsPort = parseInt(String(ports.dnsListen).split(':').pop(), 10);
   const all = [...nums, ctlPort, dnsPort];
+  // 网页操作端的端口也参与冲突检查，免得和代理端口撞车
+  if (cfg.webPort != null) all.push(cfg.webPort);
   for (const n of all) {
     if (!Number.isInteger(n) || n < 1024 || n > 65535) {
       fail('E_CONFIG_INVALID', `端口 ${n} 非法（应为 1024-65535 的整数）`,

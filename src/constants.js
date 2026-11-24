@@ -15,6 +15,8 @@ const DEFAULT_CONFIG = {
   logLevel: 'info',
   allowLan: false,
   ipv6: false,
+  // 本地网页操作端的端口。只监听回环地址，不对外暴露
+  webPort: 17893,
   // 订阅服务通常按 UA 里的 clash / mihomo 关键字返回原生 YAML
   userAgent: 'Clash/2024 mihomo/1.19 metactl/0.1',
   kernel: {
@@ -77,6 +79,8 @@ const EXIT = {
   START_FAILED: 18,
   REGISTRY: 19,
   FOREIGN_BACKUP: 20,
+  SELECT: 21,
+  WEB: 22,
 };
 
 const REG = {

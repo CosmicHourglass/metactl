@@ -133,12 +133,24 @@ function status(ctx) {
   };
 }
 
-function controllerRequest(ctx, apiPath, timeoutMs) {
+// 控制器请求。切换节点用的是 PUT /proxies/{组名}，所以 method/body 做成可选参数，
+// 旧的 GET 调用保持原样。
+function controllerRequest(ctx, apiPath, timeoutMs, options) {
   const { cfg } = ctx;
+  const opt = options || {};
+  const method = opt.method || 'GET';
+  const payload = (opt.body === undefined || opt.body === null) ? null : JSON.stringify(opt.body);
+  const headers = {
+    Authorization: 'Bearer ' + (cfg.controllerSecret || ''),
+    Accept: 'application/json',
+  };
+  if (payload !== null) {
+    headers['Content-Type'] = 'application/json';
+    headers['Content-Length'] = Buffer.byteLength(payload);
+  }
   return new Promise((resolve) => {
     const req = http.request({
-      host: ctlHost(cfg), port: ctlPort(cfg), path: apiPath, method: 'GET',
-      headers: { Authorization: 'Bearer ' + (cfg.controllerSecret || ''), Accept: 'application/json' },
+      host: ctlHost(cfg), port: ctlPort(cfg), path: apiPath, method, headers,
       timeout: timeoutMs || 1200,
     }, (res) => {
       let body = '';
@@ -151,8 +163,15 @@ function controllerRequest(ctx, apiPath, timeoutMs) {
     });
     req.on('timeout', () => req.destroy());
     req.on('error', () => resolve(null));
+    if (payload !== null) req.write(payload);
     req.end();
   });
+}
+
+// 切换策略组选中项：PUT /proxies/{组名} {"name":"节点名"}
+// 成功返回 204（无 body），失败返回 4xx 并在 message 里说明原因。
+function controllerPut(ctx, apiPath, body, timeoutMs) {
+  return controllerRequest(ctx, apiPath, timeoutMs || 5000, { method: 'PUT', body });
 }
 
 async function waitHealthy(ctx) {
@@ -265,5 +284,5 @@ async function stop(ctx) {
 
 module.exports = {
   probePort, checkPorts, portOwner, imageNameOf, clearPid, configHash,
-  status, controllerRequest, waitHealthy, start, stop,
+  status, controllerRequest, controllerPut, waitHealthy, start, stop,
 };

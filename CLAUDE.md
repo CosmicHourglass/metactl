@@ -65,6 +65,16 @@ node scripts/build-bundle.js --help
 - 全局选项 `--home / --json / --quiet / -v` 同时挂在 program 和每个子命令上，所以 `metactl --json status` 和 `metactl status --json` 都合法。
 - `--json` 模式下 `logger.info/ok/warn` 全部静默，由各命令自己调 `logger.json(out)` 输出结构化结果；错误由 `logger.printError` 输出 `{ ok:false, error:{ code, message, hint } }`。
 
+## 切换线路 / 一键连接 / 网页端
+
+三条新命令，逻辑都放在 `src/` 下的公共模块里，命令层只做输出编排（CLI 与网页端共用同一套逻辑，避免两处实现漂移）。
+
+**`metactl select`**（`src/nodes.js`）：读 `/proxies` 列策略组，`PUT /proxies/{组名}` 带 `{"name":"节点名"}` 切换。只有 `Selector` 类型的组能手动切——`URLTest`/`Fallback` 由内核自动挑，对它们切换会被内核拒绝，命令层提前拦下并说明原因。切换**只影响新建立的连接**，已有连接仍走原节点。**切换不落盘**：内核一重启就回到订阅里 select 组的第一个候选（默认线路），这是明确的设计取舍，不要再往回加持久化。
+
+**`metactl connect` / `metactl disconnect`**（`src/lifecycle.js`）：把「内核 + 系统代理」合成一条命令。**顺序不可颠倒**——连接时先起内核再开代理，断开时先关代理再停内核，任何一边反了都会让代理指向一个没人监听的端口，表现为断网。断开用 `proxy.repair()` 而不是 `proxy.off()`：前者能顺带清掉「关机残留的悬空代理」，且遇到不是本工具设置的代理会保持原样不动。连接时若代理没开成，会把本次启动的内核收回去，不留半吊子状态。
+
+**`metactl web`**（`src/web.js` + `src/web-page.js`）：本地网页操作端。只监听 `127.0.0.1`，地址里带一次性令牌，所有 `/api/*` 都要带令牌才放行（浏览器里的恶意页面读不到本机地址栏里的令牌）。页面是单文件内联 HTML/CSS/JS，不引外部资源，断网可用。令牌地址用 `logger.raw()` 打印——**不落日志文件**，否则令牌就留在磁盘上了。
+
 ## 错误与退出码
 
 `src/errors.js` 的 `AppError(code, message, hint, cause)`；`code → 退出码` 映射表在 `errors.js` 的 `CODE_EXIT`，语义常量在 `constants.js` 的 `EXIT`（如 `E_PORT_IN_USE → 17`、`E_NOT_INITIALIZED → 11`）。抛错统一用 `fail(code, msg, hint, cause)`；包装原生异常时用 `wrap(...)`。

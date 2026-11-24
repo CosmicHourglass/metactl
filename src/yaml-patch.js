@@ -125,6 +125,13 @@ function build(ctx) {
     catch (_) { /* 结构异常时交给 -t 兜底 */ }
   }
 
+  // 节点选择不落盘：内核重启后要回到订阅里的默认线路。
+  // mihomo 的 profile.store-selected 默认开着，会把 select 组的选中项写进
+  // cache.db，下次启动又恢复成上次那条 —— 与「重启连默认」正好相反，这里显式关掉。
+  // 只动这一个子键，profile 块里的其它设置保持订阅原样。
+  try { doc.setIn(['profile', 'store-selected'], false); }
+  catch (_) { /* 结构异常时交给 -t 兜底 */ }
+
   let text;
   try { text = String(doc); }
   catch (e) {

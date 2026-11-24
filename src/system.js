@@ -1,6 +1,6 @@
 'use strict';
 
-const { execFile, execFileSync } = require('child_process');
+const { execFile, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { fail, wrap } = require('./errors');
@@ -40,22 +40,31 @@ function friendlyName(name) {
 
 function runSync(name, args, opts) {
   const exe = resolveExe(name);
-  const o = { encoding: 'utf8', windowsHide: true, timeout: 15000, maxBuffer: 4 * 1024 * 1024, ...(opts || {}) };
-  try {
-    const stdout = execFileSync(exe, args, o);
-    return { code: 0, stdout: String(stdout || ''), stderr: '' };
-  } catch (e) {
-    const code = e.status;
-    // 正常返回非零（如 tasklist 无结果、reg query 键不存在），不算异常
-    if (typeof code === 'number') {
-      return { code, stdout: String(e.stdout || ''), stderr: String(e.stderr || '') };
-    }
-    if (e.code === 'ENOENT' || e.code === 'EPERM' || e.code === 'EACCES') {
+  // 用 spawnSync 而不是 execFileSync：后者默认把子进程的 stderr 继承到父进程，
+  // PowerShell 的进度信息之类会直接喷到终端，把命令自己的输出糊掉；
+  // 前者能把 stdout / stderr 都收回来自己处理。
+  const o = {
+    encoding: 'utf8', windowsHide: true, timeout: 15000, maxBuffer: 4 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(opts || {}),
+  };
+  const r = spawnSync(exe, args, o);
+  if (r.error) {
+    const code = r.error.code;
+    if (code === 'ENOENT' || code === 'EPERM' || code === 'EACCES') {
       fail('E_REGISTRY_DENIED', `无法调用系统命令 ${name}（${friendlyName(name)}）`,
         '请在普通 cmd / PowerShell 终端运行；若被安全策略/组策略拦截，请放行该命令');
     }
-    throw wrap('E_IO', `调用 ${name} 失败`, '请查看 metactl.log', e);
+    throw wrap('E_IO', `调用 ${name} 失败`, '请查看 metactl.log', r.error);
   }
+  if (r.signal) {
+    throw wrap('E_IO', `调用 ${name} 被中断或超时`, '请查看 metactl.log', r.error);
+  }
+  return {
+    code: typeof r.status === 'number' ? r.status : 1,
+    stdout: String(r.stdout || ''),
+    stderr: String(r.stderr || ''),
+  };
 }
 
 function run(name, args, opts) {

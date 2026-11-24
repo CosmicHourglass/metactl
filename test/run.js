@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const net = require('net');
+const nodeHttp = require('http');
 const YAML = require('yaml');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -69,19 +70,49 @@ function withRegistry(store, fn, extraModules) {
 }
 
 // 用假的外部控制器替换 process 模块，测速逻辑可离线单元测试。
-async function withFakeProcess(fakeExports, fn) {
+async function withFakeProcess(fakeExports, fn, modulePaths) {
   const procPath = require.resolve('../src/process');
-  const speedPath = require.resolve('../src/commands/speed');
+  const targets = (modulePaths || ['../src/commands/speed']).map((m) => require.resolve(m));
   const realProc = require('../src/process');
   require.cache[procPath] = {
     id: procPath, filename: procPath, loaded: true,
     exports: Object.assign({}, realProc, fakeExports),
   };
-  delete require.cache[speedPath];
-  try { return await fn(require(speedPath)); }
+  for (const t of targets) delete require.cache[t];
+  try { return await fn(require(targets[0])); }
   finally {
     delete require.cache[procPath];
-    delete require.cache[speedPath];
+    for (const t of targets) delete require.cache[t];
+  }
+}
+
+// 依赖 process / proxy 的模块清单。
+// 这两个模块在文件顶层就被 require，换掉它们之后必须把这些模块重新加载，
+// 否则它们手里还握着旧引用，mock 不会生效。
+const PROC_DEPENDENTS = [
+  '../src/nodes', '../src/lifecycle', '../src/web',
+  '../src/commands/select', '../src/commands/connect', '../src/commands/disconnect',
+  '../src/commands/web', '../src/commands/start', '../src/commands/restart',
+];
+
+// 替换若干模块的导出后跑一段逻辑，结束后全部还原。
+async function withModules(mocks, reload, fn) {
+  const replaced = [];
+  for (const [mod, exports] of Object.entries(mocks)) {
+    const p = require.resolve(mod);
+    const real = require(mod);
+    replaced.push(p);
+    require.cache[p] = {
+      id: p, filename: p, loaded: true,
+      exports: Object.assign({}, real, exports),
+    };
+  }
+  const targets = (reload || []).map((m) => require.resolve(m));
+  for (const t of targets) delete require.cache[t];
+  try { return await fn(); }
+  finally {
+    for (const t of targets) delete require.cache[t];
+    for (const p of replaced) delete require.cache[p];
   }
 }
 
@@ -96,8 +127,10 @@ async function main() {
       'constants', 'errors', 'paths', 'config', 'logger', 'system', 'instance',
       'context', 'http', 'github', 'kernel', 'profile', 'yaml-patch', 'validate',
       'process', 'proxy', 'geodata', 'userpath', 'uninstall', 'cli',
-    ]) require('../src/' + m);
-    for (const c of ['init', 'kernel', 'fix', 'speed', 'route', 'start', 'stop', 'restart', 'status', 'test', 'version', 'proxy', 'uninstall']) {
+      'nodes', 'lifecycle', 'web', 'web-page',
+    ]) require('../src/' + m);    for (const c of ['init', 'kernel', 'fix', 'speed', 'route', 'select', 'connect',
+      'disconnect', 'web', 'start', 'stop', 'restart', 'status', 'test', 'version',
+      'proxy', 'uninstall']) {
       require('../src/commands/' + c);
     }
   });
@@ -212,6 +245,23 @@ async function main() {
     assert.ok(masked.startsWith('https://example.com/'));
     logger.registerSecret('SECRET-TOKEN-123');
     assert.ok(!logger.maskText('a SECRET-TOKEN-123 b').includes('SECRET-TOKEN-123'));
+  });
+
+  await t('logger.raw 只写 stdout，不把令牌落进日志', () => {
+    const p = paths.createPaths(path.join(TMP, 'logger-raw'));
+    paths.ensureDirs(p);
+    logger.init(p, {});
+    const written = [];
+    const realWrite = process.stdout.write;
+    process.stdout.write = (s) => { written.push(String(s)); return true; };
+    try {
+      logger.raw('网页地址 http://127.0.0.1:1/?token=abc123');
+    } finally {
+      process.stdout.write = realWrite;
+    }
+    assert.ok(written.join('').includes('token=abc123'), '应当写到 stdout');
+    const logText = fs.existsSync(p.logCli) ? fs.readFileSync(p.logCli, 'utf8') : '';
+    assert.ok(!logText.includes('token=abc123'), '令牌不该进日志文件');
   });
 
   await t('profile URL fragment 剔除 / UA 友好解析', () => {
@@ -331,6 +381,43 @@ async function main() {
     assert.strictEqual(Buffer.from(system.encodedCommand(script), 'base64').toString('utf16le'), script);
   });
 
+  await t('system 子进程 stderr 被收走，不外泄到终端', () => {
+    // execFileSync 默认把子进程 stderr 继承给父进程，PowerShell 的进度信息
+    // 会直接喷到终端上，把命令自己的输出糊掉
+    const r = system.runSync('cmd.exe', ['/d', '/c', 'echo boom 1>&2']);
+    assert.strictEqual(r.code, 0);
+    assert.strictEqual(r.stderr.trim(), 'boom', 'stderr 应被捕获而不是继承');
+    assert.strictEqual(r.stdout.trim(), '');
+  });
+
+  await t('proxy.on 静默模式：交给上层统一输出', async () => {
+    const store = {};
+    await withModules({
+      '../src/process': { status: () => ({ running: true, pid: 1 }) },
+    }, PROC_DEPENDENTS, async () => {
+      withRegistry(store, (px) => {
+        const p = paths.createPaths(path.join(TMP, 'proxy-silent'));
+        paths.ensureDirs(p);
+        const cfg = config.load(p);
+        const out = [];
+        const fakeLogger = {
+          info: (m) => out.push(m), ok: (m) => out.push(m), warn: (m) => out.push(m),
+          err: () => {}, debug: () => {}, json: () => {},
+          maskText: (s) => s, maskUrl: (s) => s,
+        };
+        const ctx = { p, cfg, logger: fakeLogger, migration: { instanceId: 'silent-test' } };
+        px.on(ctx);
+        assert.strictEqual(out.filter((m) => /系统代理已开启/.test(m)).length, 1,
+          '普通模式自己打印一次');
+        out.length = 0;
+        px.on(ctx, { silent: true });
+        assert.strictEqual(out.filter((m) => /系统代理已开启/.test(m)).length, 0,
+          '静默模式不打印，交给上层编排');
+        assert.strictEqual(px.current().enabled, true);
+      }, ['../src/proxy']);
+    });
+  });
+
   await t('process 端口占用探测', async () => {
     const srv = net.createServer();
     await new Promise((r) => srv.listen(0, '127.0.0.1', r));
@@ -370,6 +457,13 @@ async function main() {
     for (const o of ['--force', '--arch', '--compatible', '--mirror']) {
       assert.ok(kernelOpts.includes(o), 'kernel 缺少选项 ' + o);
     }
+    for (const n of ['select', 'connect', 'disconnect', 'web']) {
+      assert.ok(names.includes(n), '缺少命令 ' + n);
+    }
+    assert.ok(optNames('disconnect').includes('--force'), 'disconnect 缺少 --force');
+    const webOpts = optNames('web');
+    assert.ok(webOpts.includes('--port'), 'web 缺少 --port');
+    assert.ok(webOpts.includes('--no-open'), 'web 缺少 --no-open');
   });
 
   await t('postinstall：优先用随包内核，没有才回落联网下载', async () => {
@@ -1018,6 +1112,277 @@ async function main() {
     assert.strictEqual(r.pointsToMetactl({ enabled: true, server: '127.0.0.1:17890' }, { ports: { mixedPort: 17890 } }), true);
     assert.strictEqual(r.pointsToMetactl({ enabled: true, server: '127.0.0.1:7892' }, { ports: { mixedPort: 17890 } }), false);
     assert.strictEqual(r.pointsToMetactl({ enabled: false, server: '127.0.0.1:17890' }, { ports: { mixedPort: 17890 } }), false);
+  });
+
+  await t('select 切换线路：列组 / 列候选 / 切换并记住', async () => {
+    const calls = [];
+    const proxies = {
+      '节点选择': { type: 'Selector', now: '自动选择', all: ['自动选择', '香港 1', '香港 2'] },
+      '自动选择': { type: 'URLTest', now: '香港 1', all: ['香港 1', '香港 2'] },
+      '香港 1': { type: 'Vmess' },
+      '香港 2': { type: 'Vmess' },
+    };
+    const p = paths.createPaths(path.join(TMP, 'select'));
+    paths.ensureDirs(p);
+    const ctx = { p, cfg: config.load(p), logger: quietLogger, migration: { instanceId: 'x' } };
+    const fakeProc = {
+      status: () => ({ running: true, pid: 1 }),
+      controllerRequest: async (c, apiPath) => {
+        calls.push(['GET', apiPath]);
+        if (apiPath === '/proxies') return { status: 200, data: { proxies } };
+        const m = /^\/proxies\/([^/]+)$/.exec(apiPath);
+        if (m) return { status: 200, data: { now: proxies[decodeURIComponent(m[1])].now } };
+        return { status: 200, data: {} };
+      },
+      controllerPut: async (c, apiPath, body) => {
+        calls.push(['PUT', apiPath, body]);
+        const name = decodeURIComponent(apiPath.replace(/^\/proxies\//, ''));
+        proxies[name].now = body.name;
+        return { status: 204 };
+      },
+    };
+    await withModules({ '../src/process': fakeProc }, PROC_DEPENDENTS, async () => {
+      const select = require('../src/commands/select');
+      const out1 = await select.run(ctx, [], {});
+      assert.strictEqual(out1.groups.length, 2, '两个代理组');
+      assert.strictEqual(out1.groups.filter((g) => g.switchable).length, 1, '只有 Selector 组可切');
+
+      const out2 = await select.run(ctx, ['节点选择'], {});
+      assert.deepStrictEqual(out2.group.candidates, ['自动选择', '香港 1', '香港 2']);
+
+      const out3 = await select.run(ctx, ['节点选择', '香港 2'], {});
+      assert.strictEqual(out3.selected.now, '香港 2');
+      assert.strictEqual(out3.selected.confirmed, true);
+
+      const puts = calls.filter((c) => c[0] === 'PUT');
+      assert.strictEqual(puts.length, 1);
+      assert.strictEqual(puts[0][1], '/proxies/' + encodeURIComponent('节点选择'));
+      assert.deepStrictEqual(puts[0][2], { name: '香港 2' });
+
+      // 选择不落盘：内核重启后回到订阅里的默认线路
+      assert.strictEqual(fs.existsSync(path.join(p.stateDir, 'selection.json')), false,
+        '切换不应留下任何持久化痕迹');
+    });
+  });
+
+  await t('select 边界：组不存在 / 节点不在组里 / 组不可切 / 内核未运行', async () => {
+    const proxies = {
+      '主组': { type: 'Selector', now: 'A', all: ['A', 'B'] },
+      '自动组': { type: 'URLTest', now: 'A', all: ['A', 'B'] },
+    };
+    const p = paths.createPaths(path.join(TMP, 'select-bad'));
+    paths.ensureDirs(p);
+    const ctx = { p, cfg: config.load(p), logger: quietLogger, migration: { instanceId: 'x' } };
+    const fakeProc = {
+      status: () => ({ running: true, pid: 1 }),
+      controllerRequest: async (c, apiPath) => {
+        if (apiPath === '/proxies') return { status: 200, data: { proxies } };
+        return { status: 200, data: {} };
+      },
+      controllerPut: async () => ({ status: 204 }),
+    };
+    await withModules({ '../src/process': fakeProc }, PROC_DEPENDENTS, async () => {
+      const select = require('../src/commands/select');
+      await assert.rejects(() => select.run(ctx, ['没有这个组'], {}),
+        (e) => e && e.code === 'E_SELECT_BAD_GROUP');
+      await assert.rejects(() => select.run(ctx, ['主组', 'C'], {}),
+        (e) => e && e.code === 'E_SELECT_BAD_NODE');
+      await assert.rejects(() => select.run(ctx, ['自动组', 'B'], {}),
+        (e) => e && e.code === 'E_SELECT_NOT_SWITCHABLE');
+    });
+
+    await withModules({
+      '../src/process': { status: () => ({ running: false, reason: 'no-pid' }) },
+    }, PROC_DEPENDENTS, async () => {
+      const select = require('../src/commands/select');
+      await assert.rejects(() => select.run(ctx, [], {}),
+        (e) => e && e.code === 'E_SELECT_NO_KERNEL');
+    });
+  });
+
+  await t('connect / disconnect：先内核后代理、先代理后内核', async () => {
+    const p = paths.createPaths(path.join(TMP, 'connect'));
+    paths.ensureDirs(p);
+    fs.writeFileSync(p.mihomoExe, 'stub kernel');
+    fs.writeFileSync(p.configYaml, 'mixed-port: 17890');
+    const ctx = { p, cfg: config.load(p), logger: quietLogger, migration: { instanceId: 'x' } };
+    const order = [];
+    let running = false;
+    const fakeProc = {
+      status: () => ({ running, pid: 777 }),
+      start: async () => { running = true; order.push('start'); return { pid: 777, startedAt: 'now', version: 'v-test' }; },
+      stop: async () => { running = false; order.push('stop'); return { stopped: true, pid: 777 }; },
+      controllerPut: async () => ({ status: 204 }),
+    };
+    const fakeProxy = {
+      on: () => { order.push('proxy-on'); return { server: '127.0.0.1:17890', refreshed: true }; },
+      repair: () => { order.push('proxy-off'); return { changed: true, mode: 'restored', reason: 'stale-proxy' }; },
+      current: () => ({ enabled: true, server: '127.0.0.1:17890' }),
+      isOurServer: (v, cfg) => String(v) === config.proxyServer(cfg),
+    };
+    await withModules({ '../src/process': fakeProc, '../src/proxy': fakeProxy }, PROC_DEPENDENTS, async () => {
+      const connect = require('../src/commands/connect');
+      const disconnect = require('../src/commands/disconnect');
+
+      const r = await connect.run(ctx, [], {});
+      assert.strictEqual(r.connected, true);
+      assert.strictEqual(r.kernel.started, true);
+      assert.deepStrictEqual(order, ['start', 'proxy-on'], '必须先起内核再开代理');
+
+      // 内核已在跑时直接复用，不当成错误
+      order.length = 0;
+      const again = await connect.run(ctx, [], {});
+      assert.strictEqual(again.kernel.reused, true);
+      assert.deepStrictEqual(order, ['proxy-on'], '已在跑就不该再 start');
+
+      order.length = 0;
+      const d = await disconnect.run(ctx, [], {});
+      assert.strictEqual(d.connected, false);
+      assert.strictEqual(d.proxy.restored, true);
+      assert.deepStrictEqual(order, ['proxy-off', 'stop'], '必须先关代理再停内核');
+    });
+  });
+
+  await t('connect / disconnect 失败时不留下半吊子状态', async () => {
+    const p = paths.createPaths(path.join(TMP, 'connect-fail'));
+    paths.ensureDirs(p);
+    fs.writeFileSync(p.mihomoExe, 'stub kernel');
+    fs.writeFileSync(p.configYaml, 'mixed-port: 17890');
+    const ctx = { p, cfg: config.load(p), logger: quietLogger, migration: { instanceId: 'x' } };
+    const order = [];
+    let running = false;
+    const fakeProc = {
+      status: () => ({ running, pid: 777 }),
+      start: async () => { running = true; order.push('start'); return { pid: 777, startedAt: 'now', version: null }; },
+      stop: async () => { running = false; order.push('stop'); return { stopped: true, pid: 777 }; },
+      controllerPut: async () => ({ status: 204 }),
+    };
+    const badProxy = {
+      on: () => { order.push('proxy-on'); throw new errors.AppError('E_PROXY_SET_FAILED', '写入失败', 'hint'); },
+      repair: () => { order.push('proxy-off'); throw new errors.AppError('E_REG_FAILED', '写入失败', 'hint'); },
+      current: () => ({ enabled: true, server: '127.0.0.1:17890' }),
+      isOurServer: (v, cfg) => String(v) === config.proxyServer(cfg),
+    };
+    await withModules({ '../src/process': fakeProc, '../src/proxy': badProxy }, PROC_DEPENDENTS, async () => {
+      const connect = require('../src/commands/connect');
+      const disconnect = require('../src/commands/disconnect');
+
+      // 代理没开成：把刚起的内核收回去
+      await assert.rejects(() => connect.run(ctx, [], {}), (e) => e && e.code === 'E_PROXY_SET_FAILED');
+      assert.ok(order.includes('stop'), '代理没开成就该把内核收回去');
+      assert.strictEqual(running, false);
+
+      // 代理没解除：内核保持运行，否则代理悬空会断网
+      order.length = 0;
+      running = true;
+      await assert.rejects(() => disconnect.run(ctx, [], {}), (e) => e && e.code === 'E_REG_FAILED');
+      assert.ok(!order.includes('stop'), '代理没解除就不该停内核');
+      assert.strictEqual(running, true);
+    });
+  });
+
+  await t('web：令牌校验、状态接口与切换接口', async () => {
+    const p = paths.createPaths(path.join(TMP, 'web'));
+    paths.ensureDirs(p);
+    const ctx = { p, cfg: config.load(p), logger: quietLogger, migration: { instanceId: 'x' } };
+    const proxies = { '主组': { type: 'Selector', now: 'A', all: ['A', 'B'] } };
+    const fakeProc = {
+      status: () => ({ running: true, pid: 1 }),
+      controllerRequest: async (c, apiPath) => {
+        if (apiPath === '/proxies') return { status: 200, data: { proxies } };
+        if (apiPath === '/version') return { status: 200, data: { version: 'v-test' } };
+        if (apiPath === '/configs') return { status: 200, data: { mode: 'rule' } };
+        const m = /^\/proxies\/([^/]+)$/.exec(apiPath);
+        if (m) return { status: 200, data: { now: proxies[decodeURIComponent(m[1])].now } };
+        return { status: 200, data: {} };
+      },
+      controllerPut: async (c, apiPath, body) => {
+        const name = decodeURIComponent(apiPath.replace(/^\/proxies\//, ''));
+        proxies[name].now = body.name;
+        return { status: 204 };
+      },
+    };
+    const fakeProxy = { current: () => ({ enabled: true, server: '127.0.0.1:17890' }) };
+    await withModules({ '../src/process': fakeProc, '../src/proxy': fakeProxy }, PROC_DEPENDENTS, async () => {
+      const web = require('../src/web');
+      const token = 'test-token-123';
+      const server = nodeHttp.createServer(web.makeHandler(ctx, token));
+      await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      const port = server.address().port;
+      const call = (method, path, obj, headers) => new Promise((resolve) => {
+        const data = obj === undefined ? null : JSON.stringify(obj);
+        const h = Object.assign({}, headers || {});
+        if (data !== null) {
+          h['Content-Type'] = 'application/json';
+          h['Content-Length'] = Buffer.byteLength(data);
+        }
+        const req = nodeHttp.request({ host: '127.0.0.1', port, path, method, headers: h }, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+        });
+        req.on('error', () => resolve({ status: 0, body: '' }));
+        if (data !== null) req.write(data);
+        req.end();
+      });
+      const auth = { 'x-metactl-token': token };
+      try {
+        const page = await call('GET', '/');
+        assert.strictEqual(page.status, 200);
+        assert.ok(page.body.includes('metactl'), '应返回操作页面');
+
+        // 没有令牌一律拒绝：防止本机上的网页越权调用
+        const noToken = await call('GET', '/api/status');
+        assert.strictEqual(noToken.status, 403);
+
+        // 带 ?token= 打开页面会种下 Cookie，之后直接访问根路径也能用
+        const withToken = await call('GET', '/?token=' + token);
+        assert.strictEqual(withToken.status, 200);
+        const cookie = String(withToken.headers['set-cookie'] || '');
+        assert.ok(cookie.includes('metactl_token='), '应下发带令牌的 Cookie');
+        const jar = cookie.split(';')[0];
+        const viaCookie = await call('GET', '/api/status', undefined, { cookie: jar });
+        assert.strictEqual(viaCookie.status, 200, 'Cookie 里的令牌应能通过校验');
+        const stillNoToken = await call('GET', '/api/status');
+        assert.strictEqual(stillNoToken.status, 403, '没有令牌仍然要拒绝');
+
+        const st = await call('GET', '/api/status', undefined, auth);
+        assert.strictEqual(st.status, 200);
+        const sj = JSON.parse(st.body);
+        assert.strictEqual(sj.ok, true);
+        assert.strictEqual(sj.running, true);
+        assert.strictEqual(sj.groups.length, 1);
+        assert.deepStrictEqual(sj.groups[0].candidates, ['A', 'B']);
+
+        const sel = await call('POST', '/api/select', { group: '主组', node: 'B' }, auth);
+        const selj = JSON.parse(sel.body);
+        assert.strictEqual(selj.ok, true);
+        assert.strictEqual(selj.selected.now, 'B');
+
+        const bad = await call('POST', '/api/select', {}, auth);
+        const badj = JSON.parse(bad.body);
+        assert.strictEqual(badj.ok, false);
+        assert.strictEqual(badj.error.code, 'E_USAGE');
+      } finally {
+        server.close();
+      }
+    });
+  });
+
+  await t('web 端口被占用时报可读错误', async () => {
+    const srv = net.createServer();
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const p = paths.createPaths(path.join(TMP, 'web-busy'));
+    paths.ensureDirs(p);
+    const ctx = { p, cfg: config.load(p), logger: quietLogger, migration: { instanceId: 'x' } };
+    try {
+      const web = require('../src/web');
+      await assert.rejects(() => web.startServer(ctx, { port }),
+        (e) => e && e.code === 'E_WEB_PORT_IN_USE');
+    } finally {
+      await new Promise((r) => srv.close(r));
+    }
   });
 
   await t('禁词扫描全绿', () => {

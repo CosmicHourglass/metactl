@@ -116,8 +116,9 @@ function disableOnly() {
   setValue(REG.enable, 'REG_DWORD', '0');
 }
 
-function on(ctx) {
+function on(ctx, opts) {
   const { p, cfg, logger } = ctx;
+  const o = opts || {};
   const proc = require('./process').status(ctx);
   if (!proc.running) {
     fail('E_PROXY_NOT_RUNNING', '内核未运行，拒绝开启系统代理（否则会导致断网）',
@@ -137,9 +138,12 @@ function on(ctx) {
     throw e;
   }
   const refreshed = refresh(ctx);
-  logger.ok(`系统代理已开启 -> ${proxyServer(cfg)}`);
-  logger.info('提醒: 关机或重启前执行 metactl proxy off；若忘记，开机后无法上网时执行 metactl fix 一键恢复');
-  logger.info('提示: Node / curl / git 默认不读系统代理；验证请用浏览器，或 curl.exe -x http://' + proxyServer(cfg));
+  // silent 模式给上层编排用（metactl connect）：由它统一输出，免得同一件事打印两遍
+  if (!o.silent) {
+    logger.ok(`系统代理已开启 -> ${proxyServer(cfg)}`);
+    logger.info('提醒: 关机或重启前执行 metactl proxy off；若忘记，开机后无法上网时执行 metactl fix 一键恢复');
+    logger.info('提示: Node / curl / git 默认不读系统代理；验证请用浏览器，或 curl.exe -x http://' + proxyServer(cfg));
+  }
   return { server: proxyServer(cfg), refreshed, backupCreatedAt: rec.createdAt };
 }
 

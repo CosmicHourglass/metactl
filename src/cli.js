@@ -15,6 +15,10 @@ const COMMANDS = {
   fix: require('./commands/fix'),
   speed: require('./commands/speed'),
   route: require('./commands/route'),
+  select: require('./commands/select'),
+  connect: require('./commands/connect'),
+  disconnect: require('./commands/disconnect'),
+  web: require('./commands/web'),
   start: require('./commands/start'),
   stop: require('./commands/stop'),
   restart: require('./commands/restart'),
@@ -31,6 +35,10 @@ const DESCRIPTIONS = {
   fix: '断网自救：清除关机残留的 metactl 系统代理，一键恢复上网',
   speed: '节点延迟测速：全量节点按延迟排行（需内核正在运行）',
   route: '查看当前代理路线：系统代理、分流模式、策略组选中与连接命中的规则',
+  select: '切换线路：查看策略组、查看候选节点、把某组切到指定节点',
+  connect: '一键连接：启动内核并开启系统代理',
+  disconnect: '一键断开：关闭系统代理并停止内核',
+  web: '开启本地网页操作端（浏览器里切节点、连接与断开）',
   start: '启动内核（不自动开启系统代理）',
   stop: '停止内核（不自动关闭系统代理）',
   restart: '重启内核（系统代理设置保持不变）',
@@ -108,6 +116,27 @@ function build() {
     .option('--timeout <ms>', '单节点超时毫秒（默认 10000）')
     .option('--limit <n>', '只显示延迟最低的前 n 个节点'))
     .action(makeHandler(program, 'speed'));
+
+  addGlobals(program.command('select')
+    .description(DESCRIPTIONS.select)
+    .argument('[group]', '策略组名（省略则列出所有组）')
+    .argument('[node]', '节点名（省略则列出该组候选）')
+    .action(makeHandler(program, 'select')));
+
+  addGlobals(program.command('connect')
+    .description(DESCRIPTIONS.connect)
+    .action(makeHandler(program, 'connect')));
+
+  addGlobals(program.command('disconnect')
+    .description(DESCRIPTIONS.disconnect)
+    .option('--force', '系统代理无法精确恢复时仍强行关闭')
+    .action(makeHandler(program, 'disconnect')));
+
+  addGlobals(program.command('web')
+    .description(DESCRIPTIONS.web)
+    .option('--port <port>', '网页服务端口（默认取配置文件里的 webPort）')
+    .option('--no-open', '不自动打开浏览器')
+    .action(makeHandler(program, 'web')));
 
   addGlobals(program.command('proxy')
     .description('开启 / 恢复 / 修复 Windows 系统代理')

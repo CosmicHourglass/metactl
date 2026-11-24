@@ -56,6 +56,13 @@ const api = {
   debug: (m) => { if (ctx && ctx.opts.verbose) emit(process.stdout, ' DBG  ', m); },
   // 供命令输出机器可读结果（json 模式有效）
   json(obj) { if (ctx && ctx.opts.json) process.stdout.write(JSON.stringify(obj) + '\n'); },
+  // 直接写 stdout，但不落日志文件。给含一次性令牌之类的地址用：
+  // 令牌进了日志文件就等于把操作权限留在了磁盘上。
+  raw(m) {
+    const safe = maskText(m);
+    if (ctx && ctx.opts.quiet) return;
+    process.stdout.write(safe + '\n');
+  },
   printError(err) {
     const code = (err && err.code) || 'E_UNKNOWN';
     const msg = maskText((err && err.message) || String(err));
